@@ -4,7 +4,7 @@
 
 This repository contains a long-only crypto trading bot built for the Roostoo AI Web3 Trading Bot Competition.
 
-The current main strategy is the **4-hour trend-following breakout system** selected from [trend_strat.ipynb](C:/Users/calde/OneDrive/Documents/Roostoo-trading-competition/trend_strat.ipynb).
+The current main strategy is the **4-hour trend-following breakout system** researched in [trend_strat.ipynb](C:/Users/calde/OneDrive/Documents/Roostoo-trading-competition/trend_strat.ipynb).
 
 High-level idea:
 
@@ -120,17 +120,23 @@ Position sizing is stop-based:
 - target notional is clipped by stop distance and `MAX_POSITION_NOTIONAL_PCT`
 - entries are split into tranches
 
-### Current Main Strategy Configuration
+### Current Live Candidate Configuration
 
-The current deployment baseline selected from [trend_strat.ipynb](C:/Users/calde/OneDrive/Documents/Roostoo-trading-competition/trend_strat.ipynb) is:
+The current live candidate keeps the same underlying trend-following logic, but uses a slightly less conservative holding profile than the original baseline:
 
-- `breakout_lookback = 6`
+- `breakout_lookback = 4`
 - `exit_lookback = 6`
-- `max_hold_bars = 9`
-- `trailing_stop_pct = 0.06`
+- `max_hold_bars = 54` (roughly 9 trading days on 4h bars)
+- `trailing_stop_pct = 0.08`
 - `tranche_scheme = (0.35, 0.35, 0.30)`
 - `use_btc_filter = False`
 - `risk_per_trade = 0.015`
+
+This version is intended as a middle ground:
+
+- faster breakout confirmation than the original 6-bar entry
+- a wider trailing stop to reduce noise exits
+- a longer maximum hold window so strong trends are not cut too early
 
 ### Risk Management
 
@@ -160,7 +166,7 @@ Current interpretation:
 - the selected configuration remains positive out of sample after costs
 - drawdown stays controlled because the strategy is selective and often underinvested
 
-This repository also includes other research notebooks, but the trend-only notebook is the current main deployment baseline.
+This repository also includes other research notebooks, but the trend-only notebook remains the core strategy research reference for the live bot.
 
 ## Setup Instructions
 

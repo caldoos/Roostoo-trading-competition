@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
+
+import requests
 
 from roostoo_bot.bot import TrendBot
 from roostoo_bot.models import AccountSnapshot, OrderInstruction, StrategySnapshot
@@ -98,6 +99,21 @@ def test_poll_telegram_commands_replies_to_help(monkeypatch, tmp_path) -> None:
     assert sent_messages
     assert sent_messages[0][0] == "123"
     assert "/account" in sent_messages[0][1]
+
+
+def test_poll_telegram_commands_ignores_telegram_http_errors(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, telegram_token="token", telegram_chat_id="123")
+    bot = TrendBot(settings)
+
+    monkeypatch.setattr(
+        bot.notifier.session,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(requests.HTTPError("429 Too Many Requests")),
+    )
+
+    bot.poll_telegram_commands()
+
+    assert bot.telegram_offset is None
 
 
 def test_run_cycle_live_submitted_order_does_not_create_position(monkeypatch, tmp_path) -> None:

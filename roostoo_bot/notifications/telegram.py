@@ -14,19 +14,23 @@ class TelegramNotifier:
     def enabled(self) -> bool:
         return bool(self.token and self.chat_id)
 
-    def send(self, text: str) -> None:
+    def send(self, text: str) -> bool:
         if not self.enabled():
-            return
-        self.send_to(self.chat_id, text)
+            return False
+        return self.send_to(self.chat_id, text)
 
-    def send_to(self, chat_id: str | int, text: str) -> None:
+    def send_to(self, chat_id: str | int, text: str) -> bool:
         if not self.enabled():
-            return
-        self.session.post(
-            f"https://api.telegram.org/bot{self.token}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
-            timeout=20,
-        ).raise_for_status()
+            return False
+        try:
+            self.session.post(
+                f"https://api.telegram.org/bot{self.token}/sendMessage",
+                json={"chat_id": chat_id, "text": text},
+                timeout=20,
+            ).raise_for_status()
+        except requests.RequestException:
+            return False
+        return True
 
     def get_updates(self, offset: int | None = None, timeout: int = 0) -> list[dict[str, Any]]:
         if not self.enabled():
@@ -34,12 +38,15 @@ class TelegramNotifier:
         params: dict[str, Any] = {"timeout": timeout}
         if offset is not None:
             params["offset"] = offset
-        response = self.session.get(
-            f"https://api.telegram.org/bot{self.token}/getUpdates",
-            params=params,
-            timeout=timeout + 20 if timeout > 0 else 20,
-        )
-        response.raise_for_status()
+        try:
+            response = self.session.get(
+                f"https://api.telegram.org/bot{self.token}/getUpdates",
+                params=params,
+                timeout=timeout + 20 if timeout > 0 else 20,
+            )
+            response.raise_for_status()
+        except requests.RequestException:
+            return []
         payload = response.json()
         if not isinstance(payload, dict) or not payload.get("ok"):
             return []
