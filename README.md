@@ -4,7 +4,7 @@
 
 This repository contains a long-only crypto trading bot built for the Roostoo AI Web3 Trading Bot Competition.
 
-The current main strategy is the **4-hour trend-following breakout system** researched in [trend_strat.ipynb](C:/Users/calde/OneDrive/Documents/Roostoo-trading-competition/trend_strat.ipynb).
+The current main strategy is the **hourly trend-following breakout system** researched in [trend_strat.ipynb](C:/Users/calde/OneDrive/Documents/Roostoo-trading-competition/trend_strat.ipynb).
 
 High-level idea:
 
@@ -29,7 +29,7 @@ Key features:
 
 ```mermaid
 flowchart TD
-    A[Binance Spot 4h Candles] --> B[Signal + Feature Engine]
+    A[Binance Spot 1h Candles] --> B[Signal + Feature Engine]
     B --> C[Trend-Only Strategy Logic]
     C --> D[Order Decisions]
     D --> E[Roostoo API Client]
@@ -46,7 +46,7 @@ flowchart TD
 - `roostoo_bot/clients/roostoo.py`
   Handles signed Roostoo REST requests for balances, pending orders, symbol info, and order placement/cancel.
 - `roostoo_bot/strategy/trend_only.py`
-  Implements the 4h trend-following breakout logic and generates entry/add/exit instructions.
+  Implements the hourly trend-following breakout logic and generates entry/add/exit instructions.
 - `roostoo_bot/bot.py`
   Orchestrates the live bot cycle: refresh data, detect new bar, run strategy, execute orders, persist state, and log outcomes.
 - `roostoo_bot/storage/`
@@ -93,7 +93,7 @@ Maximum concurrent open positions:
 
 ### Entry Conditions
 
-Signals are evaluated only on completed **4-hour candles**.
+Signals are evaluated only on completed **1-hour candles**.
 
 A symbol is eligible for entry when all of the following are true:
 
@@ -122,21 +122,21 @@ Position sizing is stop-based:
 
 ### Current Live Candidate Configuration
 
-The current live candidate keeps the same underlying trend-following logic, but uses a slightly less conservative holding profile than the original baseline:
+The current live candidate is the **1-hour equivalent** of the same core trend logic. The notebook interval comparison supported this as the strongest recent post-cost variant among `1h`, `2h`, and `4h`.
 
-- `breakout_lookback = 4`
-- `exit_lookback = 6`
-- `max_hold_bars = 54` (roughly 9 trading days on 4h bars)
+- `candle_interval = 1h`
+- `ema_span = 80`
+- `momentum_bars = 24`
+- `breakout_lookback = 16`
+- `exit_lookback = 24`
+- `max_hold_bars = 216` (roughly 9 trading days on 1h bars)
 - `trailing_stop_pct = 0.08`
 - `tranche_scheme = (0.35, 0.35, 0.30)`
+- `add_delay_bars = 8`
 - `use_btc_filter = False`
 - `risk_per_trade = 0.015`
 
-This version is intended as a middle ground:
-
-- faster breakout confirmation than the original 6-bar entry
-- a wider trailing stop to reduce noise exits
-- a longer maximum hold window so strong trends are not cut too early
+This preserves roughly the same economic horizons as the earlier 4h version, but checks for opportunities more frequently.
 
 ### Risk Management
 
@@ -151,7 +151,7 @@ This version is intended as a middle ground:
 
 - market data comes from Binance spot, not Roostoo candles
 - execution happens on Roostoo mock exchange
-- live behavior approximates "evaluate shortly after 4h bar close"
+- live behavior approximates "evaluate shortly after 1h bar close"
 - transaction costs matter, so `5 bps` to `10 bps` scenarios are more informative than frictionless backtests
 
 ## Research / Backtest Summary
@@ -162,9 +162,9 @@ Main research notebook:
 
 Current interpretation:
 
-- the strategy is materially stronger than equal-weight buy-and-hold on a risk-adjusted basis
-- the selected configuration remains positive out of sample after costs
-- drawdown stays controlled because the strategy is selective and often underinvested
+- the 1h interval outperformed the 2h and 4h variants on the most recent post-cost test window
+- the strategy remains selective rather than hyperactive, but participates more often than the 4h version
+- cost-aware test-period performance stayed strong enough to justify live evaluation of the 1h candidate
 
 This repository also includes other research notebooks, but the trend-only notebook remains the core strategy research reference for the live bot.
 
