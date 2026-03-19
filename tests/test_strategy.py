@@ -94,3 +94,20 @@ def test_strategy_respects_btc_filter(tmp_path) -> None:
 
     assert "ETHUSDT" in snapshot.eligible_symbols
     assert not any(action.reason == "trend_entry" for action in snapshot.actions)
+
+
+def test_strategy_exposes_failed_reasons_in_diagnostics(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    strategy = TrendOnlyStrategy(settings)
+    btc = make_frame([100 + i for i in range(40)])
+    eth = make_frame([100] * 39 + [99], high_pad=1.0, low_pad=1.0)
+    candle_map = {"BTCUSDT": btc, "ETHUSDT": eth}
+    signal_ts = eth.index[-1]
+    account = AccountSnapshot(timestamp=signal_ts.isoformat(), cash=1_000_000.0, equity=1_000_000.0)
+
+    snapshot = strategy.evaluate(candle_map, BotState(), account, signal_ts)
+
+    eth_diag = next(diag for diag in snapshot.diagnostics if diag.symbol == "ETHUSDT")
+    assert eth_diag.eligible is False
+    assert "close_below_breakout_high" in eth_diag.failed_reasons
+    assert "close_below_trend_ema" in eth_diag.failed_reasons

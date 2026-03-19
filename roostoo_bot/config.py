@@ -73,10 +73,12 @@ class Settings:
     state_path: Path
     event_log_path: Path
     heartbeat_log_path: Path
+    scan_diagnostics_path: Path
     telegram_offset_path: Path
     candle_cache_dir: Path
     telegram_token: str
     telegram_chat_id: str
+    telegram_log_id: str
     binance_base_url: str
     roostoo_base_url: str
     roostoo_api_key: str
@@ -124,10 +126,12 @@ def load_settings() -> Settings:
         state_path=root / "outputs" / "bot_state.json",
         event_log_path=root / "outputs" / "events.jsonl",
         heartbeat_log_path=root / "outputs" / "heartbeat.jsonl",
+        scan_diagnostics_path=root / "outputs" / "scan_diagnostics.jsonl",
         telegram_offset_path=root / "outputs" / "telegram_offset.json",
         candle_cache_dir=root / "outputs" / "candle_cache",
         telegram_token=os.getenv("TELEGRAM_TOKEN", "").strip(),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
+        telegram_log_id=os.getenv("TELEGRAM_LOG_ID", "").strip(),
         binance_base_url=os.getenv("BINANCE_BASE_URL", "https://api.binance.com").rstrip("/"),
         roostoo_base_url=os.getenv("ROOSTOO_BASE_URL", "").rstrip("/"),
         roostoo_api_key=os.getenv("ROOSTOO_API_KEY", "").strip(),

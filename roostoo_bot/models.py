@@ -18,8 +18,8 @@ class OrderInstruction:
     trend_score: float | None = None
     breakout_high: float | None = None
     exit_low: float | None = None
-    ema20: float | None = None
-    ema20_slope: float | None = None
+    trend_ema: float | None = None
+    trend_ema_slope: float | None = None
     reference_close: float | None = None
 
 
@@ -46,12 +46,31 @@ class AccountSnapshot:
 
 
 @dataclass(slots=True)
+class ScanDiagnostic:
+    symbol: str
+    close: float | None
+    breakout_high: float | None
+    exit_low: float | None
+    trend_ema: float | None
+    trend_ema_slope: float | None
+    trend_score: float | None
+    base_entry: bool
+    eligible: bool
+    in_position: bool
+    selected_for_entry: bool = False
+    selected_for_add: bool = False
+    selected_for_exit: bool = False
+    failed_reasons: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class StrategySnapshot:
     timestamp: str
     ranked_symbols: list[str]
     eligible_symbols: list[str]
     trend_scores: dict[str, float]
     actions: list[OrderInstruction]
+    diagnostics: list[ScanDiagnostic] = field(default_factory=list)
 
 
 @dataclass(slots=True)

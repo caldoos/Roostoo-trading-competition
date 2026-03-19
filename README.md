@@ -86,6 +86,9 @@ The current trading universe is:
 - `LINKUSDT`
 - `SUIUSDT`
 - `FETUSDT`
+- `ZECUSDT`
+- `TAOUSDT`
+
 
 Maximum concurrent open positions:
 
@@ -98,8 +101,8 @@ Signals are evaluated only on completed **1-hour candles**.
 A symbol is eligible for entry when all of the following are true:
 
 - `close > breakout_high`
-- `close > ema20`
-- `ema20_slope > 0`
+- `close > trend_ema`
+- `trend_ema_slope > 0`
 
 Eligible names are ranked by cross-sectional relative strength using recent momentum.
 
@@ -107,7 +110,7 @@ Eligible names are ranked by cross-sectional relative strength using recent mome
 
 Exits are evaluated in this order:
 
-- structure break: `close < ema20` or `close < exit_low`
+- structure break: `close < trend_ema` or `close < exit_low`
 - stop exit: `close <= stop_price`
 - trailing stop exit: `close <= peak_close * (1 - trailing_stop_pct)`
 - max hold exit: `hold_bars >= max_hold_bars`
@@ -219,6 +222,7 @@ copy .env.example .env
 - `ROOSTOO_API_SECRET`
 - `TELEGRAM_TOKEN`
 - `TELEGRAM_CHAT_ID`
+- `TELEGRAM_LOG_ID` (optional second chat/channel for hourly scan summaries)
 
 ### Optional: Poetry
 
@@ -286,6 +290,13 @@ When Telegram is configured, the running bot also responds to:
 - `/state`
 - `/config`
 
+If `TELEGRAM_LOG_ID` is set, the bot also sends a compact hourly scan report to that second chat/channel, including:
+
+- number of eligible symbols
+- number of actions
+- top-ranked symbols
+- first pass/fail status for each top-ranked symbol
+
 ### 4. Switch between paper and live mode
 
 In `.env`:
@@ -306,6 +317,8 @@ Generated files:
   Append-only trading decision log.
 - `outputs/heartbeat.jsonl`
   Append-only health log for cycle execution.
+- `outputs/scan_diagnostics.jsonl`
+  Per-symbol hourly scan diagnostics showing which entry rules passed or failed at each processed candle.
 - `outputs/candle_cache/*.csv`
   Local Binance candle cache by symbol.
 

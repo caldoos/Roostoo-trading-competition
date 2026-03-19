@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import pandas as pd
@@ -10,7 +11,7 @@ from roostoo_bot.clients.binance import BinanceClient
 from roostoo_bot.clients.roostoo import RoostooClient
 from roostoo_bot.config import Settings
 from roostoo_bot.logging_utils import append_jsonl, get_logger, utc_now_iso
-from roostoo_bot.models import AccountSnapshot, OrderInstruction, PositionState
+from roostoo_bot.models import AccountSnapshot, OrderInstruction, PositionState, ScanDiagnostic
 from roostoo_bot.notifications.telegram import TelegramNotifier
 from roostoo_bot.storage.candle_store import CandleStore
 from roostoo_bot.storage.state_store import StateStore
@@ -229,8 +230,8 @@ class TrendBot:
                 "trend_score": instruction.trend_score,
                 "breakout_high": instruction.breakout_high,
                 "exit_low": instruction.exit_low,
-                "ema20": instruction.ema20,
-                "ema20_slope": instruction.ema20_slope,
+                "trend_ema": instruction.trend_ema,
+                "trend_ema_slope": instruction.trend_ema_slope,
                 "entry_price": instruction.limit_price or instruction.reference_close,
                 "stop_price": instruction.stop_price,
                 "peak_close": self.state.positions.get(instruction.symbol).peak_close
@@ -287,11 +288,51 @@ class TrendBot:
             f"{action.reason}:{action.symbol}@{(action.limit_price or action.reference_close or 0.0):.4f}" for action in actions[:6]
         ) if actions else "no orders"
         self.notifier.send(
-            f"[{self.settings.bot_name}] 4h cycle {signal_ts.isoformat()}\n"
+            f"[{self.settings.bot_name}] {self.settings.candle_interval} cycle {signal_ts.isoformat()}\n"
             f"Eligible: {top}\n"
             f"Actions: {action_text}\n"
             f"Open positions: {len(self.state.positions)} | Cash: {self.state.last_cash:,.0f} | Equity: {self.state.last_equity:,.0f}"
         )
+
+    def _send_scan_log_summary(self, diagnostics: list[ScanDiagnostic], actions: list[OrderInstruction], signal_ts: pd.Timestamp) -> None:
+        if not self.settings.telegram_log_id:
+            return
+        ranked = sorted(
+            diagnostics,
+            key=lambda item: item.trend_score if item.trend_score is not None else float("-inf"),
+            reverse=True,
+        )
+        lines = [
+            f"[{self.settings.bot_name}] {self.settings.candle_interval} scan {signal_ts.isoformat()}",
+            f"Eligible: {sum(1 for item in diagnostics if item.eligible)} | Actions: {len(actions)}",
+            "Top ranked:",
+        ]
+        for diagnostic in ranked[:5]:
+            score = f"{diagnostic.trend_score:.2f}" if diagnostic.trend_score is not None else "n/a"
+            if diagnostic.selected_for_entry:
+                status = "ENTRY"
+            elif diagnostic.selected_for_add:
+                status = "ADD"
+            elif diagnostic.selected_for_exit:
+                status = "EXIT"
+            elif diagnostic.eligible:
+                status = "ELIGIBLE"
+            else:
+                status = diagnostic.failed_reasons[0] if diagnostic.failed_reasons else "no_signal"
+            lines.append(f"- {diagnostic.symbol}: score={score}, status={status}")
+        self.notifier.send_to(self.settings.telegram_log_id, "\n".join(lines))
+
+    def _log_scan_diagnostics(self, diagnostics: list[ScanDiagnostic], signal_ts: pd.Timestamp) -> None:
+        rank_map = {diag.symbol: rank + 1 for rank, diag in enumerate(sorted(
+            diagnostics,
+            key=lambda item: item.trend_score if item.trend_score is not None else float("-inf"),
+            reverse=True,
+        ))}
+        for diagnostic in diagnostics:
+            payload = asdict(diagnostic)
+            payload["timestamp_utc"] = signal_ts.isoformat()
+            payload["rank"] = rank_map.get(diagnostic.symbol)
+            append_jsonl(self.settings.scan_diagnostics_path, payload)
 
     def _format_bot_positions(self) -> str:
         if not self.state.positions:
@@ -520,7 +561,9 @@ class TrendBot:
                 "equity": self.state.last_equity,
             },
         )
+        self._log_scan_diagnostics(snapshot.diagnostics, signal_ts)
         self._send_scan_summary(snapshot.eligible_symbols, snapshot.actions, signal_ts)
+        self._send_scan_log_summary(snapshot.diagnostics, snapshot.actions, signal_ts)
         return True
 
     def run_forever(self) -> None:
