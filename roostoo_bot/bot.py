@@ -37,6 +37,23 @@ class TrendBot:
             self.state.last_cash = settings.initial_equity
             self.state.last_equity = settings.initial_equity
 
+    @staticmethod
+    def _format_price(value: float | None) -> str:
+        if value is None:
+            return "n/a"
+        abs_value = abs(value)
+        if abs_value >= 1000:
+            return f"{value:.2f}"
+        if abs_value >= 1:
+            return f"{value:.4f}"
+        if abs_value >= 0.01:
+            return f"{value:.5f}"
+        if abs_value >= 0.0001:
+            return f"{value:.6f}"
+        if abs_value == 0:
+            return "0"
+        return f"{value:.8f}"
+
     def _load_telegram_offset(self) -> int | None:
         path = self.settings.telegram_offset_path
         if not path.exists():
@@ -209,6 +226,110 @@ class TrendBot:
             equity += position.units * float(frame.at[signal_ts, "close"])
         self.state.last_equity = equity
 
+    def _load_event_rows(self) -> list[dict[str, object]]:
+        path = self.settings.event_log_path
+        if not path.exists():
+            return []
+        rows: list[dict[str, object]] = []
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+        rows.sort(key=lambda row: str(row.get("timestamp_utc", "")))
+        return rows
+
+    def _rebuild_position_ledger(self) -> dict[str, dict[str, float]]:
+        ledger: dict[str, dict[str, float]] = {}
+        for row in self._load_event_rows():
+            symbol = str(row.get("symbol", "")).strip().upper()
+            if not symbol:
+                continue
+            action = str(row.get("action", ""))
+            qty = float(row.get("units", 0.0) or 0.0)
+            price = float(row.get("entry_price", row.get("price", 0.0)) or 0.0)
+            stop_price = float(row.get("stop_price", 0.0) or 0.0)
+            if action in {"entry", "add"}:
+                existing = ledger.get(symbol)
+                if existing is None:
+                    ledger[symbol] = {
+                        "units": qty,
+                        "avg_entry": price,
+                        "stop_price": stop_price,
+                        "target_notional": float(row.get("notional", qty * price) or qty * price),
+                        "tranches_filled": 1.0 if action == "entry" else 0.0,
+                    }
+                else:
+                    total_units = existing["units"] + qty
+                    if total_units > 0:
+                        existing["avg_entry"] = (
+                            existing["avg_entry"] * existing["units"] + price * qty
+                        ) / total_units
+                    existing["units"] = total_units
+                    existing["stop_price"] = stop_price or existing["stop_price"]
+                    existing["target_notional"] = max(existing["target_notional"], float(row.get("notional", qty * price) or qty * price))
+                    existing["tranches_filled"] += 1.0
+            elif action == "full_exit":
+                ledger.pop(symbol, None)
+        return ledger
+
+    def _reconcile_live_positions(
+        self,
+        account: AccountSnapshot,
+        candle_map: dict[str, pd.DataFrame],
+        signal_ts: pd.Timestamp,
+    ) -> None:
+        wallet = {}
+        if isinstance(account.raw, dict):
+            balances = account.raw.get("balances", {})
+            if isinstance(balances, dict):
+                wallet = balances.get("SpotWallet") or balances.get("Wallet") or {}
+        if not isinstance(wallet, dict):
+            return
+
+        ledger = self._rebuild_position_ledger()
+        reconciled: dict[str, PositionState] = {}
+        for asset, payload in wallet.items():
+            if asset == "USD" or not isinstance(payload, dict):
+                continue
+            units = float(payload.get("Free", 0.0) or 0.0) + float(payload.get("Lock", 0.0) or 0.0)
+            if units <= 0:
+                continue
+            symbol = f"{asset}USDT"
+            frame = candle_map.get(symbol)
+            close_price = None
+            if frame is not None and signal_ts in frame.index:
+                close_price = float(frame.at[signal_ts, "close"])
+            elif frame is not None and not frame.empty:
+                close_price = float(frame["close"].iloc[-1])
+            ledger_row = ledger.get(symbol, {})
+            avg_entry = float(ledger_row.get("avg_entry", close_price or 0.0))
+            stop_price = float(ledger_row.get("stop_price", 0.0))
+            target_notional = float(ledger_row.get("target_notional", units * (avg_entry or close_price or 0.0)))
+            tranches_filled = int(round(float(ledger_row.get("tranches_filled", 1.0))))
+            peak_close = max(close_price or avg_entry, avg_entry)
+            existing = self.state.positions.get(symbol)
+            hold_bars = existing.hold_bars if existing is not None else 0
+            bars_since_last_fill = existing.bars_since_last_fill if existing is not None else 0
+            reconciled[symbol] = PositionState(
+                symbol=symbol,
+                units=units,
+                target_notional=target_notional,
+                tranches_filled=max(tranches_filled, 1),
+                stop_price=stop_price,
+                peak_close=peak_close,
+                hold_bars=hold_bars,
+                avg_entry=avg_entry or (close_price or 0.0),
+                bars_since_last_fill=bars_since_last_fill,
+            )
+
+        self.state.positions = reconciled
+
     def _log_event(
         self,
         instruction: OrderInstruction,
@@ -276,7 +397,7 @@ class TrendBot:
             reason = instruction.reason.replace("_", " ")
             self.notifier.send(
                 f"[{self.settings.bot_name}] EXIT {instruction.symbol}\n"
-                f"Qty: {qty:.6f} | Entry: {entry_price:.4f} | Exit: {fill_price:.4f}\n"
+                f"Qty: {qty:.6f} | Entry: {self._format_price(entry_price)} | Exit: {self._format_price(fill_price)}\n"
                 f"P/L: {pnl:+.2f} ({pnl_pct:+.2f}%) | R: {r_text}\n"
                 f"Reason: {reason}\n"
                 f"Open positions: {len(self.state.positions)} | Equity: {self.state.last_equity:,.2f}"
@@ -303,7 +424,7 @@ class TrendBot:
             f"- side: {instruction.side}\n"
             f"- reason: {instruction.reason}\n"
             f"- qty: {instruction.quantity:.6f}\n"
-            f"- price: {fill_price:.6f}\n"
+            f"- price: {self._format_price(fill_price)}\n"
             f"- status: {order_status}\n"
             f"- order_id: {order_id or 'n/a'}"
             f"{stop_line}"
@@ -313,7 +434,7 @@ class TrendBot:
     def _send_scan_summary(self, eligible: list[str], actions: list[OrderInstruction], signal_ts: pd.Timestamp) -> None:
         top = ", ".join(eligible[:5]) if eligible else "none"
         action_text = ", ".join(
-            f"{action.reason}:{action.symbol}@{(action.limit_price or action.reference_close or 0.0):.4f}" for action in actions[:6]
+            f"{action.reason}:{action.symbol}@{self._format_price(action.limit_price or action.reference_close or 0.0)}" for action in actions[:6]
         ) if actions else "no orders"
         self.notifier.send(
             f"[{self.settings.bot_name}] {self.settings.candle_interval} cycle {signal_ts.isoformat()}\n"
@@ -363,13 +484,32 @@ class TrendBot:
             append_jsonl(self.settings.scan_diagnostics_path, payload)
 
     def _format_bot_positions(self) -> str:
+        if self.settings.live_trading and self.roostoo.is_configured():
+            try:
+                snapshot = self.roostoo.fetch_account_snapshot(self.settings.initial_equity)
+                latest_candles = self.refresh_candles()
+                signal_ts = self._latest_common_timestamp(latest_candles)
+                if signal_ts is not None:
+                    self._reconcile_live_positions(snapshot, latest_candles, signal_ts)
+                    self.state.last_cash = snapshot.cash
+                    self._mark_to_market(latest_candles, signal_ts)
+            except Exception as exc:  # noqa: BLE001
+                return f"Positions query failed: {exc}"
+
         if not self.state.positions:
-            return "No local bot positions."
-        lines = ["Local bot positions:"]
+            return "No tracked positions."
+        lines = ["Tracked positions:"]
+        latest_candles = self.refresh_candles() if self.settings.live_trading else {}
         for symbol, pos in sorted(self.state.positions.items()):
+            mark = None
+            if symbol in latest_candles and not latest_candles[symbol].empty:
+                mark = float(latest_candles[symbol]["close"].iloc[-1])
+            pnl = (mark - pos.avg_entry) * pos.units if mark is not None else 0.0
+            pnl_pct = ((mark / pos.avg_entry) - 1.0) * 100 if mark is not None and pos.avg_entry > 0 else 0.0
             lines.append(
-                f"- {symbol}: units={pos.units:.6f}, avg={pos.avg_entry:.4f}, stop={pos.stop_price:.4f}, "
-                f"tranches={pos.tranches_filled}, hold_bars={pos.hold_bars}"
+                f"- {symbol} | qty {pos.units:.6f} | entry {self._format_price(pos.avg_entry)} "
+                f"| stop {self._format_price(pos.stop_price)} | mark {self._format_price(mark)} "
+                f"| uPnL {pnl:+.2f} ({pnl_pct:+.2f}%)"
             )
         return "\n".join(lines)
 
@@ -613,6 +753,9 @@ class TrendBot:
         equity_before = account.equity
         self.state.last_cash = account.cash
         self.state.last_equity = account.equity
+        if self.settings.live_trading and self.roostoo.is_configured():
+            self._reconcile_live_positions(account, candle_map, signal_ts)
+            self._mark_to_market(candle_map, signal_ts)
 
         snapshot = self.strategy.evaluate(candle_map, self.state, account, signal_ts)
         touched: set[str] = set()
