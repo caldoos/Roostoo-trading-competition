@@ -577,6 +577,18 @@ class TrendBot:
             )
         return "\n".join(lines)
 
+    def _refresh_live_positions_for_reporting(self) -> None:
+        if not (self.settings.live_trading and self.roostoo.is_configured()):
+            return
+        snapshot = self.roostoo.fetch_account_snapshot(self.settings.initial_equity)
+        latest_candles = self.refresh_candles()
+        signal_ts = self._latest_common_timestamp(latest_candles)
+        if signal_ts is None:
+            return
+        self._reconcile_live_positions(snapshot, latest_candles, signal_ts)
+        self.state.last_cash = snapshot.cash
+        self._mark_to_market(latest_candles, signal_ts)
+
     def _format_account_snapshot(self) -> str:
         try:
             if self.settings.live_trading and self.roostoo.is_configured():
@@ -646,9 +658,14 @@ class TrendBot:
         return "\n".join(lines)
 
     def _format_orders(self) -> str:
+        try:
+            self._refresh_live_positions_for_reporting()
+        except Exception:
+            pass
         rows = self._load_event_rows()
         if not rows:
             return "No recent bot orders found."
+        held_symbols = set(self.state.positions)
         lines = ["Recent bot orders:"]
         for row in reversed(rows[-10:]):
             symbol = str(row.get("symbol", "n/a"))
@@ -657,11 +674,16 @@ class TrendBot:
             qty = float(row.get("units", 0.0) or 0.0)
             price = row.get("entry_price")
             status = str(row.get("order_status", "unknown"))
+            if status in {"submitted", "pending", "open", "new"}:
+                if side == "buy" and symbol in held_symbols:
+                    status = "filled"
+                elif side == "sell" and symbol not in held_symbols:
+                    status = "filled"
             timestamp = str(row.get("timestamp_utc", "n/a"))
             price_text = ""
             if isinstance(price, (int, float)):
                 price_text = f" @ {self._format_price(float(price))}"
-            lines.append(f"{timestamp} | {symbol} | {side} qty {qty:g}{price_text} | {status}")
+            lines.append(f"{timestamp} | {symbol} | {side} qty {self._format_units(qty)}{price_text} | {status}")
         return "\n".join(lines)
 
     def _format_config(self) -> str:

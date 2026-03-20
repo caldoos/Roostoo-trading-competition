@@ -386,6 +386,40 @@ def test_orders_returns_recent_event_history(tmp_path) -> None:
     assert "2026-03-19T15:24:01.319391Z | SQQQ | buy qty 1051 @ 76.8600 | filled" in reply
 
 
+def test_orders_upgrades_live_pending_buy_to_filled_and_formats_qty(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, live_trading=True)
+    bot = TrendBot(settings)
+    settings.event_log_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-03-20T05:00:00+00:00",
+                "symbol": "FLOKIUSDT",
+                "action": "entry",
+                "units": 115131578.947368,
+                "entry_price": 0.0000304,
+                "order_status": "pending",
+            }
+        ),
+        encoding="utf-8",
+    )
+    bot.state.positions["FLOKIUSDT"] = PositionState(
+        symbol="FLOKIUSDT",
+        units=115131578.0,
+        target_notional=3499.0,
+        tranches_filled=1,
+        stop_price=0.00002888,
+        peak_close=0.0000304,
+        hold_bars=1,
+        avg_entry=0.0000304,
+        bars_since_last_fill=0,
+    )
+    monkeypatch.setattr(bot, "_refresh_live_positions_for_reporting", lambda: None)
+
+    reply = bot._format_orders()
+
+    assert "FLOKIUSDT | buy qty 115131578.947368 @ 0.00003040 | filled" in reply
+
+
 def test_run_cycle_live_submitted_order_does_not_create_position(monkeypatch, tmp_path) -> None:
     settings = build_settings(tmp_path, live_trading=True)
     bot = TrendBot(settings)
