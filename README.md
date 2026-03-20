@@ -215,6 +215,8 @@ copy .env.example .env
 - `ROOSTOO_BASE_URL`
 - `ROOSTOO_API_KEY`
 - `ROOSTOO_API_SECRET`
+- `ROOSTOO_MAX_RETRIES`
+- `ROOSTOO_BACKOFF_SECONDS`
 - `TELEGRAM_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `TELEGRAM_LOG_ID` (optional second chat/channel for hourly scan summaries)

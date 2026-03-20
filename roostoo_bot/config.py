@@ -84,6 +84,8 @@ class Settings:
     roostoo_api_key: str
     roostoo_api_secret: str
     roostoo_timeout_seconds: int
+    roostoo_max_retries: int
+    roostoo_backoff_seconds: float
     roostoo_endpoints: dict[str, str]
 
 
@@ -192,5 +194,7 @@ def load_settings() -> Settings:
         roostoo_api_key=os.getenv("ROOSTOO_API_KEY", "").strip(),
         roostoo_api_secret=os.getenv("ROOSTOO_API_SECRET", "").strip(),
         roostoo_timeout_seconds=int(os.getenv("ROOSTOO_TIMEOUT_SECONDS", "30")),
+        roostoo_max_retries=int(os.getenv("ROOSTOO_MAX_RETRIES", "3")),
+        roostoo_backoff_seconds=float(os.getenv("ROOSTOO_BACKOFF_SECONDS", "1.0")),
         roostoo_endpoints=_parse_json(os.getenv("ROOSTOO_ENDPOINTS_JSON", "")),
     )

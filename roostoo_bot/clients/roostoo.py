@@ -20,6 +20,8 @@ class RoostooClient:
         self.api_key = settings.roostoo_api_key
         self.api_secret = settings.roostoo_api_secret
         self.timeout_seconds = settings.roostoo_timeout_seconds
+        self.max_retries = max(settings.roostoo_max_retries, 1)
+        self.backoff_seconds = max(settings.roostoo_backoff_seconds, 0.0)
         self.endpoints = settings.roostoo_endpoints
         self.session = requests.Session()
         self._trade_pair_cache: dict[str, dict[str, Any]] | None = None
@@ -90,6 +92,7 @@ class RoostooClient:
         *,
         params: dict[str, Any] | None = None,
         signed: bool = False,
+        retry_safe: bool = False,
     ) -> Any:
         if signed and not self.is_configured():
             raise RuntimeError("Roostoo client is not configured.")
@@ -112,18 +115,34 @@ class RoostooClient:
         elif encoded_payload:
             request_kwargs["data"] = encoded_payload
 
-        response = self.session.request(**request_kwargs)
-        response.raise_for_status()
-        if not response.content:
-            return {}
-        return response.json()
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries):
+            try:
+                response = self.session.request(**request_kwargs)
+                response.raise_for_status()
+                if not response.content:
+                    return {}
+                return response.json()
+            except requests.RequestException as exc:
+                last_error = exc
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                should_retry = retry_safe and (
+                    status_code in {408, 425, 429, 500, 502, 503, 504} or status_code is None
+                )
+                if not should_retry or attempt >= self.max_retries - 1:
+                    raise
+                time.sleep(self.backoff_seconds * (2 ** attempt))
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Roostoo request failed without raising a concrete exception.")
 
     def get_server_time(self) -> dict[str, Any]:
-        result = self._request("GET", self._endpoint("server_time", "/v3/serverTime"))
+        result = self._request("GET", self._endpoint("server_time", "/v3/serverTime"), retry_safe=True)
         return result if isinstance(result, dict) else {"raw": result}
 
     def get_symbols(self) -> dict[str, Any]:
-        result = self._request("GET", self._endpoint("symbols", "/v3/exchangeInfo"))
+        result = self._request("GET", self._endpoint("symbols", "/v3/exchangeInfo"), retry_safe=True)
         return result if isinstance(result, dict) else {"raw": result}
 
     def get_trade_pairs(self) -> dict[str, dict[str, Any]]:
@@ -193,15 +212,21 @@ class RoostooClient:
 
     def get_ticker(self, pair: str | None = None) -> dict[str, Any]:
         params = {"pair": pair} if pair else None
-        result = self._request("GET", self._endpoint("ticker", "/v3/ticker"), params=params, signed=False)
+        result = self._request(
+            "GET",
+            self._endpoint("ticker", "/v3/ticker"),
+            params=params,
+            signed=False,
+            retry_safe=True,
+        )
         return result if isinstance(result, dict) else {"raw": result}
 
     def get_balances(self) -> dict[str, Any]:
-        result = self._request("GET", self._endpoint("balances", "/v3/balance"), signed=True)
+        result = self._request("GET", self._endpoint("balances", "/v3/balance"), signed=True, retry_safe=True)
         return result if isinstance(result, dict) else {"raw": result}
 
     def get_pending_count(self) -> dict[str, Any]:
-        result = self._request("GET", self._endpoint("pending_count", "/v3/pending_count"), signed=True)
+        result = self._request("GET", self._endpoint("pending_count", "/v3/pending_count"), signed=True, retry_safe=True)
         return result if isinstance(result, dict) else {"raw": result}
 
     def query_orders(
@@ -224,7 +249,13 @@ class RoostooClient:
             if offset is not None:
                 params["offset"] = offset
             params["pending_only"] = pending_only
-        result = self._request("POST", self._endpoint("open_orders", "/v3/query_order"), params=params, signed=True)
+        result = self._request(
+            "POST",
+            self._endpoint("open_orders", "/v3/query_order"),
+            params=params,
+            signed=True,
+            retry_safe=True,
+        )
         return result if isinstance(result, dict) else {"raw": result}
 
     def place_order(

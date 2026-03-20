@@ -50,6 +50,8 @@ def build_settings(tmp_path: Path, **overrides: object) -> Settings:
         roostoo_api_key="test-key",
         roostoo_api_secret="test-secret",
         roostoo_timeout_seconds=30,
+        roostoo_max_retries=3,
+        roostoo_backoff_seconds=1.0,
         roostoo_endpoints={
             "server_time": "/v3/serverTime",
             "balances": "/v3/balance",

@@ -5,6 +5,8 @@ import hmac
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
+import requests
+
 from roostoo_bot.clients.roostoo import RoostooClient
 
 from tests.conftest import build_settings
@@ -134,3 +136,76 @@ def test_roostoo_place_order_fails_when_rounded_quantity_below_minimum(monkeypat
 
     assert response["Success"] is False
     assert "MiniOrder" in response["ErrMsg"]
+
+
+def test_roostoo_safe_requests_retry_with_backoff(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, roostoo_max_retries=3, roostoo_backoff_seconds=0.5)
+    client = RoostooClient(settings)
+    attempts = {"count": 0}
+    sleeps: list[float] = []
+
+    def fake_request(**kwargs):
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            response = SimpleNamespace(status_code=429)
+            raise requests.HTTPError("429 Too Many Requests", response=response)
+        return SimpleNamespace(
+            status_code=200,
+            content=b'{"Success": true}',
+            json=lambda: {"Success": True},
+            raise_for_status=lambda: None,
+        )
+
+    monkeypatch.setattr(client.session, "request", fake_request)
+    monkeypatch.setattr("roostoo_bot.clients.roostoo.time.sleep", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(client, "_timestamp_ms", lambda: "1234567890")
+
+    result = client.get_balances()
+
+    assert result["Success"] is True
+    assert attempts["count"] == 3
+    assert sleeps == [0.5, 1.0]
+
+
+def test_roostoo_place_order_does_not_retry_on_http_error(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, roostoo_max_retries=3, roostoo_backoff_seconds=0.5)
+    client = RoostooClient(settings)
+    attempts = {"count": 0}
+
+    monkeypatch.setattr(
+        client,
+        "get_symbols",
+        lambda: {
+            "TradePairs": {
+                "TAO/USD": {
+                    "CanTrade": True,
+                    "PricePrecision": 1,
+                    "AmountPrecision": 4,
+                    "MiniOrder": 1,
+                }
+            }
+        },
+    )
+
+    def fake_request(**kwargs):
+        attempts["count"] += 1
+        response = SimpleNamespace(status_code=429)
+        raise requests.HTTPError("429 Too Many Requests", response=response)
+
+    monkeypatch.setattr(client.session, "request", fake_request)
+    monkeypatch.setattr("roostoo_bot.clients.roostoo.time.sleep", lambda seconds: None)
+
+    try:
+        client.place_order(
+            symbol="TAOUSDT",
+            side="buy",
+            quantity=7.373595505617973,
+            order_type="limit",
+            price=278.34,
+        )
+    except requests.HTTPError:
+        pass
+    else:
+        raise AssertionError("Expected HTTPError from non-retried place_order call.")
+
+    assert attempts["count"] == 1
