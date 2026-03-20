@@ -5,7 +5,7 @@ import json
 import requests
 
 from roostoo_bot.bot import TrendBot
-from roostoo_bot.models import AccountSnapshot, OrderInstruction, ScanDiagnostic, StrategySnapshot
+from roostoo_bot.models import AccountSnapshot, OrderInstruction, PositionState, ScanDiagnostic, StrategySnapshot
 
 from tests.conftest import build_settings, make_frame
 
@@ -335,3 +335,60 @@ def test_run_cycle_live_failed_order_includes_error_message(monkeypatch, tmp_pat
     assert event["order_status"] == "failed"
     assert event["error_message"] == "invalid quantity precision"
     assert any("invalid quantity precision" in message for message in sent_messages)
+
+
+def test_run_cycle_filled_exit_notification_includes_pnl_and_r(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    bot = TrendBot(settings)
+    frame = make_frame([100 + i for i in range(30)])
+    signal_ts = frame.index[-1]
+    candle_map = {"BTCUSDT": frame}
+
+    bot.state.positions["BTCUSDT"] = PositionState(
+        symbol="BTCUSDT",
+        units=2.0,
+        target_notional=200.0,
+        tranches_filled=1,
+        stop_price=95.0,
+        peak_close=110.0,
+        hold_bars=3,
+        avg_entry=100.0,
+        bars_since_last_fill=1,
+    )
+    bot.state.last_cash = 10_000.0
+    bot.state.last_equity = 10_200.0
+
+    monkeypatch.setattr(bot, "refresh_candles", lambda: candle_map)
+    monkeypatch.setattr(bot, "_send_scan_summary", lambda eligible, actions, ts: None)
+    sent_messages: list[str] = []
+    monkeypatch.setattr(bot.notifier, "send", lambda text: sent_messages.append(text))
+    monkeypatch.setattr(
+        bot.strategy,
+        "evaluate",
+        lambda candle_map, state, account, signal_ts: StrategySnapshot(
+            timestamp=signal_ts.isoformat(),
+            ranked_symbols=[],
+            eligible_symbols=[],
+            trend_scores={},
+            actions=[
+                OrderInstruction(
+                    symbol="BTCUSDT",
+                    side="sell",
+                    quantity=2.0,
+                    order_type="limit",
+                    limit_price=105.0,
+                    reason="stop",
+                    target_notional=200.0,
+                    stop_price=95.0,
+                    reference_close=105.0,
+                )
+            ],
+        ),
+    )
+
+    processed = bot.run_cycle()
+
+    assert processed is True
+    assert any("EXIT BTCUSDT" in message for message in sent_messages)
+    assert any("P/L: +10.00 (+5.00%) | R: +1.00R" in message for message in sent_messages)
+    assert any("Reason: stop" in message for message in sent_messages)

@@ -48,7 +48,7 @@ def test_strategy_generates_exit_for_existing_position(tmp_path) -> None:
 
     snapshot = strategy.evaluate(candle_map, state, account, signal_ts)
 
-    assert any(action.reason == "trend_or_risk_exit" and action.symbol == "ETHUSDT" for action in snapshot.actions)
+    assert any(action.reason == "stop" and action.symbol == "ETHUSDT" for action in snapshot.actions)
 
 
 def test_strategy_generates_add_after_delay(tmp_path) -> None:

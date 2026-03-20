@@ -153,14 +153,18 @@ class TrendOnlyStrategy:
             row = frame.loc[signal_ts]
             close_price = float(row["close"])
             trailing_stop = position.peak_close * (1 - self.settings.trailing_stop_pct)
-            should_exit = (
-                (close_price < float(row["trend_ema"]))
-                or (close_price < float(row["exit_low"]))
-                or (close_price <= position.stop_price)
-                or (close_price <= trailing_stop)
-                or (position.hold_bars >= self.settings.max_hold_bars)
-            )
-            if not should_exit:
+            exit_reason: str | None = None
+            if close_price <= position.stop_price:
+                exit_reason = "stop"
+            elif close_price <= trailing_stop:
+                exit_reason = "trailing_stop"
+            elif close_price < float(row["exit_low"]):
+                exit_reason = "exit_low_break"
+            elif close_price < float(row["trend_ema"]):
+                exit_reason = "trend_ema_break"
+            elif position.hold_bars >= self.settings.max_hold_bars:
+                exit_reason = "max_hold"
+            if exit_reason is None:
                 continue
             exited_symbols.add(symbol)
             if symbol in diagnostics:
@@ -173,7 +177,7 @@ class TrendOnlyStrategy:
                     quantity=position.units,
                     order_type=self.settings.default_order_type,
                     limit_price=close_price if self.settings.default_order_type == "limit" else None,
-                    reason="trend_or_risk_exit",
+                    reason=exit_reason,
                     target_notional=position.target_notional,
                     stop_price=position.stop_price,
                     trend_score=trend_scores.get(symbol),

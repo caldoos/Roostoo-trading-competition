@@ -259,11 +259,29 @@ class TrendBot:
         response: dict[str, object],
         order_status: str,
         fill_price: float,
+        position_before: PositionState | None = None,
     ) -> None:
         order_id = response.get("order_id") or response.get("OrderID")
         order_detail = response.get("OrderDetail")
         if not order_id and isinstance(order_detail, dict):
             order_id = order_detail.get("OrderID")
+        if order_status == "filled" and instruction.side == "sell" and position_before is not None:
+            entry_price = position_before.avg_entry
+            qty = instruction.quantity
+            pnl = (fill_price - entry_price) * qty
+            pnl_pct = (fill_price / entry_price - 1.0) * 100 if entry_price > 0 else 0.0
+            risk_per_unit = max(entry_price - position_before.stop_price, 0.0)
+            total_risk = risk_per_unit * qty
+            r_text = f"{(pnl / total_risk):+.2f}R" if total_risk > 0 else "n/a"
+            reason = instruction.reason.replace("_", " ")
+            self.notifier.send(
+                f"[{self.settings.bot_name}] EXIT {instruction.symbol}\n"
+                f"Qty: {qty:.6f} | Entry: {entry_price:.4f} | Exit: {fill_price:.4f}\n"
+                f"P/L: {pnl:+.2f} ({pnl_pct:+.2f}%) | R: {r_text}\n"
+                f"Reason: {reason}\n"
+                f"Open positions: {len(self.state.positions)} | Equity: {self.state.last_equity:,.2f}"
+            )
+            return
         if order_status == "filled":
             title = "Order filled"
         elif order_status in {"submitted", "open", "pending", "new"}:
@@ -274,6 +292,11 @@ class TrendBot:
             title = "Order update"
         error_message = response.get("ErrMsg") or response.get("error") or response.get("Message")
         error_line = f"\n- error: {error_message}" if error_message else ""
+        stop_line = (
+            f"\n- stop_loss: {instruction.stop_price:.6f}"
+            if instruction.stop_price is not None
+            else "\n- stop_loss: n/a"
+        )
         self.notifier.send(
             f"[{self.settings.bot_name}] {title}\n"
             f"- symbol: {instruction.symbol}\n"
@@ -283,6 +306,7 @@ class TrendBot:
             f"- price: {fill_price:.6f}\n"
             f"- status: {order_status}\n"
             f"- order_id: {order_id or 'n/a'}"
+            f"{stop_line}"
             f"{error_line}"
         )
 
@@ -531,13 +555,16 @@ class TrendBot:
         snapshot = self.strategy.evaluate(candle_map, self.state, account, signal_ts)
         touched: set[str] = set()
         for instruction in snapshot.actions:
+            position_before = None
+            if instruction.side == "sell" and instruction.symbol in self.state.positions:
+                position_before = PositionState(**asdict(self.state.positions[instruction.symbol]))
             response, fill_price, order_status = self._execute_instruction(instruction)
             if order_status == "filled":
                 self._apply_fill(instruction, fill_price)
                 touched.add(instruction.symbol)
                 self._mark_to_market(candle_map, signal_ts)
             self._log_event(instruction, response, order_status, signal_ts, cash_before, equity_before)
-            self._notify_order_event(instruction, response, order_status, fill_price)
+            self._notify_order_event(instruction, response, order_status, fill_price, position_before=position_before)
             self.logger.info(
                 "Order %s %s %.6f @ %.4f | reason=%s | status=%s",
                 instruction.side,
