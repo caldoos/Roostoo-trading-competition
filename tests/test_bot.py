@@ -284,6 +284,108 @@ def test_scan_command_without_symbol_returns_latest_snapshot(tmp_path) -> None:
     assert "ETHUSDT: score=-0.50 eligible=False" in reply
 
 
+def test_account_snapshot_marks_live_equity_from_wallet(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, live_trading=True)
+    bot = TrendBot(settings)
+
+    monkeypatch.setattr(
+        bot.roostoo,
+        "fetch_account_snapshot",
+        lambda initial_equity: AccountSnapshot(
+            timestamp="2026-03-20T06:02:12.845790+00:00",
+            cash=44_575.59,
+            equity=44_575.59,
+            open_orders=[],
+            raw={
+                "balances": {
+                    "SpotWallet": {
+                        "USD": {"Free": 44575.59, "Lock": 0},
+                        "FET": {"Free": 8254.7, "Lock": 0},
+                        "FLOKI": {"Free": 115131578, "Lock": 0},
+                    }
+                }
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        bot,
+        "_build_wallet_marks",
+        lambda wallet: {"FET": 0.2404, "FLOKI": 0.00003037},
+    )
+
+    reply = bot._format_account_snapshot()
+
+    assert "cash: 44,575.59" in reply
+    assert "equity: 50,056.57" in reply
+    assert "mode: live" in reply
+
+
+def test_wallet_includes_mark_and_usd_value(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, live_trading=True)
+    bot = TrendBot(settings)
+
+    monkeypatch.setattr(
+        bot.roostoo,
+        "get_balances",
+        lambda: {
+            "SpotWallet": {
+                "USD": {"Free": 44575.59, "Lock": 0},
+                "FET": {"Free": 8254.7, "Lock": 0},
+                "FLOKI": {"Free": 115131578, "Lock": 0},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        bot,
+        "_build_wallet_marks",
+        lambda wallet: {"FET": 0.2404, "FLOKI": 0.00003037},
+    )
+
+    reply = bot._format_wallet()
+
+    assert "FET: free=8254.7, lock=0 | mark=0.24040 | usd_value=1,984.43" in reply
+    assert "FLOKI: free=115131578, lock=0 | mark=0.00003037 | usd_value=3,496.55" in reply
+    assert "USD: free=44,575.59, lock=0.00 | usd_value=44,575.59" in reply
+
+
+def test_orders_returns_recent_event_history(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    bot = TrendBot(settings)
+    settings.event_log_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "timestamp_utc": "2026-03-19T15:24:01.319391Z",
+                        "symbol": "SQQQ",
+                        "action": "entry",
+                        "units": 1051,
+                        "entry_price": 76.86,
+                        "order_status": "filled",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp_utc": "2026-03-19T19:03:01.027319Z",
+                        "symbol": "SQQQ",
+                        "action": "full_exit",
+                        "units": 1051,
+                        "entry_price": 75.91,
+                        "order_status": "filled",
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    reply = bot._format_orders()
+
+    assert reply.startswith("Recent bot orders:")
+    assert "2026-03-19T19:03:01.027319Z | SQQQ | sell qty 1051 @ 75.9100 | filled" in reply
+    assert "2026-03-19T15:24:01.319391Z | SQQQ | buy qty 1051 @ 76.8600 | filled" in reply
+
+
 def test_run_cycle_live_submitted_order_does_not_create_position(monkeypatch, tmp_path) -> None:
     settings = build_settings(tmp_path, live_trading=True)
     bot = TrendBot(settings)

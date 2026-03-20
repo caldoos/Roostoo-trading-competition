@@ -54,6 +54,13 @@ class TrendBot:
             return "0"
         return f"{value:.8f}"
 
+    @staticmethod
+    def _format_units(value: float) -> str:
+        if abs(value - round(value)) < 1e-9:
+            return str(int(round(value)))
+        text = f"{value:.6f}".rstrip("0").rstrip(".")
+        return text if text else "0"
+
     def _load_telegram_offset(self) -> int | None:
         path = self.settings.telegram_offset_path
         if not path.exists():
@@ -225,6 +232,63 @@ class TrendBot:
                 continue
             equity += position.units * float(frame.at[signal_ts, "close"])
         self.state.last_equity = equity
+
+    @staticmethod
+    def _extract_wallet_from_balances(balances: dict[str, object] | None) -> dict[str, dict[str, object]]:
+        if not isinstance(balances, dict):
+            return {}
+        wallet = balances.get("SpotWallet") or balances.get("Wallet") or {}
+        return wallet if isinstance(wallet, dict) else {}
+
+    def _latest_close_for_symbol(self, symbol: str) -> float | None:
+        latest_frame = None
+        try:
+            latest_frame = self.binance.fetch_recent_klines(symbol, self.settings.candle_interval, limit=10)
+        except Exception:  # noqa: BLE001
+            latest_frame = None
+        if latest_frame is not None and not latest_frame.empty:
+            frame = self.candle_store.upsert(symbol, latest_frame)
+            if not frame.empty:
+                return float(frame["close"].iloc[-1])
+
+        cached = self.candle_store.load(symbol)
+        if not cached.empty:
+            return float(cached["close"].iloc[-1])
+        return None
+
+    def _build_wallet_marks(self, wallet: dict[str, dict[str, object]]) -> dict[str, float]:
+        marks: dict[str, float] = {}
+        for asset, payload in wallet.items():
+            if asset == "USD" or not isinstance(payload, dict):
+                continue
+            total_units = float(payload.get("Free", 0.0) or 0.0) + float(payload.get("Lock", 0.0) or 0.0)
+            if total_units <= 0:
+                continue
+            symbol = f"{asset}USDT"
+            price = self._latest_close_for_symbol(symbol)
+            if price is not None:
+                marks[asset] = price
+        return marks
+
+    def _mark_wallet_equity(
+        self,
+        wallet: dict[str, dict[str, object]],
+        marks: dict[str, float],
+        fallback_cash: float,
+    ) -> tuple[float, float]:
+        usd_wallet = wallet.get("USD", {}) if isinstance(wallet.get("USD"), dict) else {}
+        cash = float(usd_wallet.get("Free", fallback_cash) or fallback_cash)
+        equity = cash + float(usd_wallet.get("Lock", 0.0) or 0.0)
+        for asset, payload in wallet.items():
+            if asset == "USD" or not isinstance(payload, dict):
+                continue
+            total_units = float(payload.get("Free", 0.0) or 0.0) + float(payload.get("Lock", 0.0) or 0.0)
+            if total_units <= 0:
+                continue
+            mark = marks.get(asset)
+            if mark is not None:
+                equity += total_units * mark
+        return cash, equity
 
     def _load_event_rows(self) -> list[dict[str, object]]:
         path = self.settings.event_log_path
@@ -517,6 +581,17 @@ class TrendBot:
         try:
             if self.settings.live_trading and self.roostoo.is_configured():
                 snapshot = self.roostoo.fetch_account_snapshot(self.settings.initial_equity)
+                balances = snapshot.raw.get("balances", {}) if isinstance(snapshot.raw, dict) else {}
+                wallet = self._extract_wallet_from_balances(balances)
+                marks = self._build_wallet_marks(wallet)
+                cash, equity = self._mark_wallet_equity(wallet, marks, snapshot.cash)
+                snapshot = AccountSnapshot(
+                    timestamp=snapshot.timestamp,
+                    cash=cash,
+                    equity=equity,
+                    open_orders=snapshot.open_orders,
+                    raw=snapshot.raw,
+                )
             else:
                 snapshot = AccountSnapshot(
                     timestamp=utc_now_iso(),
@@ -543,41 +618,50 @@ class TrendBot:
             balances = self.roostoo.get_balances()
         except Exception as exc:  # noqa: BLE001
             return f"Wallet query failed: {exc}"
-        wallet = balances.get("SpotWallet") or balances.get("Wallet") or {}
+        wallet = self._extract_wallet_from_balances(balances)
         if not wallet:
             return f"Wallet response: {balances}"
+        marks = self._build_wallet_marks(wallet)
         lines = ["Roostoo wallet:"]
         for asset, payload in sorted(wallet.items()):
             if not isinstance(payload, dict):
                 continue
-            free = payload.get("Free", 0)
-            locked = payload.get("Lock", 0)
-            lines.append(f"- {asset}: free={free}, lock={locked}")
+            free = float(payload.get("Free", 0.0) or 0.0)
+            locked = float(payload.get("Lock", 0.0) or 0.0)
+            total_units = free + locked
+            if asset == "USD":
+                lines.append(f"- {asset}: free={free:,.2f}, lock={locked:,.2f} | usd_value={total_units:,.2f}")
+                continue
+            mark = marks.get(asset)
+            if mark is None:
+                lines.append(
+                    f"- {asset}: free={self._format_units(free)}, lock={self._format_units(locked)} | usd_value=n/a"
+                )
+                continue
+            usd_value = total_units * mark
+            lines.append(
+                f"- {asset}: free={self._format_units(free)}, lock={self._format_units(locked)} "
+                f"| mark={self._format_price(mark)} | usd_value={usd_value:,.2f}"
+            )
         return "\n".join(lines)
 
     def _format_orders(self) -> str:
-        if not self.roostoo.is_configured():
-            return "Roostoo is not configured."
-        try:
-            pending = self.roostoo.get_pending_count()
-            orders = self.roostoo.query_orders(pending_only=True)
-        except Exception as exc:  # noqa: BLE001
-            return f"Order query failed: {exc}"
-        total = pending.get("TotalPending", 0)
-        order_list = orders.get("Orders") if isinstance(orders, dict) else None
-        if not order_list:
-            return f"Pending orders: {total}\nNo pending orders found."
-        lines = [f"Pending orders: {total}"]
-        for order in order_list[:10]:
-            if not isinstance(order, dict):
-                continue
-            lines.append(
-                f"- id={order.get('OrderID') or order.get('order_id')} "
-                f"pair={order.get('Pair') or order.get('pair')} "
-                f"side={order.get('Side') or order.get('side')} "
-                f"qty={order.get('Quantity') or order.get('quantity')} "
-                f"price={order.get('Price') or order.get('price')}"
-            )
+        rows = self._load_event_rows()
+        if not rows:
+            return "No recent bot orders found."
+        lines = ["Recent bot orders:"]
+        for row in reversed(rows[-10:]):
+            symbol = str(row.get("symbol", "n/a"))
+            action = str(row.get("action", "")).lower()
+            side = "buy" if action in {"entry", "add"} else "sell" if action == "full_exit" else action or "n/a"
+            qty = float(row.get("units", 0.0) or 0.0)
+            price = row.get("entry_price")
+            status = str(row.get("order_status", "unknown"))
+            timestamp = str(row.get("timestamp_utc", "n/a"))
+            price_text = ""
+            if isinstance(price, (int, float)):
+                price_text = f" @ {self._format_price(float(price))}"
+            lines.append(f"{timestamp} | {symbol} | {side} qty {qty:g}{price_text} | {status}")
         return "\n".join(lines)
 
     def _format_config(self) -> str:
@@ -668,7 +752,7 @@ class TrendBot:
             "/ping - basic liveness/status\n"
             "/account - current account snapshot\n"
             "/wallet - Roostoo wallet balances\n"
-            "/orders - pending Roostoo orders\n"
+            "/orders - recent bot orders\n"
             "/positions - local bot positions\n"
             "/state - local bot state summary\n"
             "/config - active strategy/runtime config\n"
