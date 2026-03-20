@@ -268,3 +268,70 @@ def test_run_cycle_live_submitted_order_does_not_create_position(monkeypatch, tm
     event = json.loads(settings.event_log_path.read_text(encoding="utf-8").strip())
     assert event["order_status"] == "submitted"
     assert any("Order submitted" in message for message in sent_messages)
+
+
+def test_run_cycle_live_failed_order_includes_error_message(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path, live_trading=True)
+    bot = TrendBot(settings)
+    frame = make_frame([100 + i for i in range(30)])
+    signal_ts = frame.index[-1]
+    candle_map = {"TAOUSDT": frame}
+
+    monkeypatch.setattr(bot, "refresh_candles", lambda: candle_map)
+    monkeypatch.setattr(bot, "_send_scan_summary", lambda eligible, actions, ts: None)
+    sent_messages: list[str] = []
+    monkeypatch.setattr(bot.notifier, "send", lambda text: sent_messages.append(text))
+    monkeypatch.setattr(
+        bot.roostoo,
+        "fetch_account_snapshot",
+        lambda initial_equity: AccountSnapshot(
+            timestamp=signal_ts.isoformat(),
+            cash=50_000.0,
+            equity=50_000.0,
+            open_orders=[],
+            raw={"mode": "live-test"},
+        ),
+    )
+    monkeypatch.setattr(
+        bot.strategy,
+        "evaluate",
+        lambda candle_map, state, account, signal_ts: StrategySnapshot(
+            timestamp=signal_ts.isoformat(),
+            ranked_symbols=["TAOUSDT"],
+            eligible_symbols=["TAOUSDT"],
+            trend_scores={"TAOUSDT": 2.5},
+            actions=[
+                OrderInstruction(
+                    symbol="TAOUSDT",
+                    side="buy",
+                    quantity=7.373595505617973,
+                    order_type="limit",
+                    limit_price=278.3,
+                    reason="trend_entry",
+                    tranche_number=1,
+                    target_notional=2052.0,
+                    stop_price=242.7,
+                    trend_score=2.5,
+                    breakout_high=274.9,
+                    exit_low=242.7,
+                    trend_ema=264.5,
+                    trend_ema_slope=0.34,
+                    reference_close=278.3,
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        bot.roostoo,
+        "place_order",
+        lambda **kwargs: {"Success": False, "ErrMsg": "invalid quantity precision"},
+    )
+
+    processed = bot.run_cycle()
+
+    assert processed is True
+    assert "TAOUSDT" not in bot.state.positions
+    event = json.loads(settings.event_log_path.read_text(encoding="utf-8").strip())
+    assert event["order_status"] == "failed"
+    assert event["error_message"] == "invalid quantity precision"
+    assert any("invalid quantity precision" in message for message in sent_messages)

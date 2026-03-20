@@ -246,6 +246,7 @@ class TrendBot:
                 "equity_after": self.state.last_equity,
                 "order_type": instruction.order_type,
                 "order_status": order_status,
+                "error_message": response.get("ErrMsg") or response.get("error") or response.get("Message"),
                 "roostoo_order_id": response.get("order_id")
                 or response.get("OrderID")
                 or (response.get("OrderDetail", {}) if isinstance(response.get("OrderDetail"), dict) else {}).get("OrderID"),
@@ -271,6 +272,8 @@ class TrendBot:
             title = "Order failed"
         else:
             title = "Order update"
+        error_message = response.get("ErrMsg") or response.get("error") or response.get("Message")
+        error_line = f"\n- error: {error_message}" if error_message else ""
         self.notifier.send(
             f"[{self.settings.bot_name}] {title}\n"
             f"- symbol: {instruction.symbol}\n"
@@ -280,6 +283,7 @@ class TrendBot:
             f"- price: {fill_price:.6f}\n"
             f"- status: {order_status}\n"
             f"- order_id: {order_id or 'n/a'}"
+            f"{error_line}"
         )
 
     def _send_scan_summary(self, eligible: list[str], actions: list[OrderInstruction], signal_ts: pd.Timestamp) -> None:

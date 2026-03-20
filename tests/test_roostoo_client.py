@@ -61,3 +61,76 @@ def test_roostoo_normalize_pair_and_snapshot(tmp_path, monkeypatch) -> None:
     assert snapshot.cash == 50000.0
     assert snapshot.equity == 141000.0
     assert snapshot.open_orders == []
+
+
+def test_roostoo_place_order_applies_pair_precision(monkeypatch, tmp_path) -> None:
+    client = RoostooClient(build_settings(tmp_path))
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        client,
+        "get_symbols",
+        lambda: {
+            "TradePairs": {
+                "TAO/USD": {
+                    "CanTrade": True,
+                    "PricePrecision": 1,
+                    "AmountPrecision": 4,
+                    "MiniOrder": 1,
+                }
+            }
+        },
+    )
+
+    def fake_request(method, path, *, params=None, signed=False):
+        captured["params"] = params
+        return {"Success": True, "OrderID": "abc"}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    response = client.place_order(
+        symbol="TAOUSDT",
+        side="buy",
+        quantity=7.373595505617973,
+        order_type="limit",
+        price=278.34,
+    )
+
+    assert response["Success"] is True
+    assert captured["params"] == {
+        "pair": "TAO/USD",
+        "side": "BUY",
+        "type": "LIMIT",
+        "quantity": 7.3735,
+        "price": 278.3,
+    }
+
+
+def test_roostoo_place_order_fails_when_rounded_quantity_below_minimum(monkeypatch, tmp_path) -> None:
+    client = RoostooClient(build_settings(tmp_path))
+
+    monkeypatch.setattr(
+        client,
+        "get_symbols",
+        lambda: {
+            "TradePairs": {
+                "TAO/USD": {
+                    "CanTrade": True,
+                    "PricePrecision": 1,
+                    "AmountPrecision": 4,
+                    "MiniOrder": 1,
+                }
+            }
+        },
+    )
+
+    response = client.place_order(
+        symbol="TAOUSDT",
+        side="buy",
+        quantity=0.123456,
+        order_type="limit",
+        price=278.3,
+    )
+
+    assert response["Success"] is False
+    assert "MiniOrder" in response["ErrMsg"]

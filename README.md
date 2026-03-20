@@ -73,21 +73,16 @@ flowchart TD
 
 ### Universe
 
-The current trading universe is:
+The current trading universe is the overlap between:
 
-- `BTCUSDT`
-- `ETHUSDT`
-- `SOLUSDT`
-- `XRPUSDT`
-- `BNBUSDT`
-- `DOGEUSDT`
-- `AVAXUSDT`
-- `ADAUSDT`
-- `LINKUSDT`
-- `SUIUSDT`
-- `FETUSDT`
-- `ZECUSDT`
-- `TAOUSDT`
+- Roostoo `CanTrade=True` pairs
+- Binance spot symbols available for live signal generation
+
+The default symbol list now covers 66 names:
+
+- `SOMIUSDT`, `PEPEUSDT`, `UNIUSDT`, `VIRTUALUSDT`, `CRVUSDT`, `BIOUSDT`, `SEIUSDT`, `ZECUSDT`, `PENDLEUSDT`, `HBARUSDT`, `ADAUSDT`, `SUIUSDT`, `SHIBUSDT`, `TONUSDT`, `POLUSDT`, `PLUMEUSDT`, `BONKUSDT`, `TAOUSDT`, `EDENUSDT`, `EIGENUSDT`, `ONDOUSDT`, `BMTUSDT`, `HEMIUSDT`, `OPENUSDT`, `WLDUSDT`, `AVNTUSDT`, `TRXUSDT`, `1000CHEEMSUSDT`, `WIFUSDT`, `ENAUSDT`, `CAKEUSDT`, `LINEAUSDT`, `LISTAUSDT`, `ZENUSDT`, `ASTERUSDT`, `PENGUUSDT`, `FORMUSDT`, `STOUSDT`, `DOTUSDT`, `TUTUSDT`, `NEARUSDT`, `MIRAUSDT`, `PUMPUSDT`, `APTUSDT`, `PAXGUSDT`, `ICPUSDT`, `FLOKIUSDT`, `CFXUSDT`, `WLFIUSDT`, `FILUSDT`, `AAVEUSDT`, `ARBUSDT`, `XPLUSDT`, `XLMUSDT`, `BTCUSDT`, `ETHUSDT`, `SOLUSDT`, `XRPUSDT`, `BNBUSDT`, `DOGEUSDT`, `AVAXUSDT`, `LINKUSDT`, `FETUSDT`, `LTCUSDT`, `SUSDT`, `TRUMPUSDT`
+
+`OMNI/USD` is tradable on Roostoo but was excluded because `OMNIUSDT` was not available on Binance spot in the verification used for this universe build.
 
 
 Maximum concurrent open positions:

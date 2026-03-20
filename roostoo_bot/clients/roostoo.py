@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import Any
 from urllib.parse import urlencode
 
@@ -21,6 +22,7 @@ class RoostooClient:
         self.timeout_seconds = settings.roostoo_timeout_seconds
         self.endpoints = settings.roostoo_endpoints
         self.session = requests.Session()
+        self._trade_pair_cache: dict[str, dict[str, Any]] | None = None
 
     def is_configured(self) -> bool:
         return bool(self.base_url and self.api_key and self.api_secret)
@@ -124,6 +126,71 @@ class RoostooClient:
         result = self._request("GET", self._endpoint("symbols", "/v3/exchangeInfo"))
         return result if isinstance(result, dict) else {"raw": result}
 
+    def get_trade_pairs(self) -> dict[str, dict[str, Any]]:
+        if self._trade_pair_cache is None:
+            payload = self.get_symbols()
+            trade_pairs = payload.get("TradePairs", {}) if isinstance(payload, dict) else {}
+            self._trade_pair_cache = trade_pairs if isinstance(trade_pairs, dict) else {}
+        return self._trade_pair_cache
+
+    def get_pair_rules(self, symbol: str) -> dict[str, Any] | None:
+        pair = self._normalize_pair(symbol)
+        rules = self.get_trade_pairs().get(pair)
+        return rules if isinstance(rules, dict) else None
+
+    @staticmethod
+    def _precision_quantize(value: float, precision: int, *, rounding: str) -> float:
+        decimal_value = Decimal(str(value))
+        quantum = Decimal("1").scaleb(-precision)
+        return float(decimal_value.quantize(quantum, rounding=rounding))
+
+    def normalize_order_params(
+        self,
+        *,
+        symbol: str,
+        quantity: float,
+        price: float | None,
+    ) -> dict[str, Any]:
+        rules = self.get_pair_rules(symbol)
+        if rules is None:
+            return {
+                "ok": False,
+                "pair": self._normalize_pair(symbol),
+                "error": f"Pair not found in Roostoo exchangeInfo: {self._normalize_pair(symbol)}",
+            }
+        if rules.get("CanTrade") is False:
+            return {
+                "ok": False,
+                "pair": self._normalize_pair(symbol),
+                "error": f"Pair disabled for trading: {self._normalize_pair(symbol)}",
+            }
+
+        qty_precision = int(rules.get("AmountPrecision", 8))
+        normalized_qty = self._precision_quantize(quantity, qty_precision, rounding=ROUND_DOWN)
+        minimum_qty = self._safe_float(rules.get("MiniOrder"), 0.0)
+        if normalized_qty <= 0 or normalized_qty < minimum_qty:
+            return {
+                "ok": False,
+                "pair": self._normalize_pair(symbol),
+                "error": (
+                    f"Rounded quantity {normalized_qty} below MiniOrder {minimum_qty} "
+                    f"for {self._normalize_pair(symbol)}"
+                ),
+            }
+
+        normalized_price = price
+        if price is not None:
+            price_precision = int(rules.get("PricePrecision", 8))
+            normalized_price = self._precision_quantize(price, price_precision, rounding=ROUND_HALF_UP)
+
+        return {
+            "ok": True,
+            "pair": self._normalize_pair(symbol),
+            "quantity": normalized_qty,
+            "price": normalized_price,
+            "rules": rules,
+        }
+
     def get_ticker(self, pair: str | None = None) -> dict[str, Any]:
         params = {"pair": pair} if pair else None
         result = self._request("GET", self._endpoint("ticker", "/v3/ticker"), params=params, signed=False)
@@ -169,14 +236,21 @@ class RoostooClient:
         order_type: str,
         price: float | None = None,
     ) -> dict[str, Any]:
+        normalized = self.normalize_order_params(symbol=symbol, quantity=quantity, price=price)
+        if not normalized.get("ok"):
+            return {
+                "Success": False,
+                "ErrMsg": normalized.get("error", "Order normalization failed"),
+                "pair": normalized.get("pair"),
+            }
         payload: dict[str, Any] = {
-            "pair": self._normalize_pair(symbol),
+            "pair": str(normalized["pair"]),
             "side": side.upper(),
             "type": order_type.upper(),
-            "quantity": quantity,
+            "quantity": normalized["quantity"],
         }
-        if price is not None:
-            payload["price"] = price
+        if normalized.get("price") is not None:
+            payload["price"] = normalized["price"]
         result = self._request("POST", self._endpoint("place_order", "/v3/place_order"), params=payload, signed=True)
         return result if isinstance(result, dict) else {"raw": result}
 
