@@ -286,6 +286,8 @@ When Telegram is configured, the running bot also responds to:
 - `/positions`
 - `/state`
 - `/config`
+- `/scan`
+- `/scan SYMBOL`
 
 If `TELEGRAM_LOG_ID` is set, the bot also sends a compact hourly scan report to that second chat/channel, including:
 

@@ -204,6 +204,86 @@ def test_poll_telegram_commands_ignores_telegram_http_errors(monkeypatch, tmp_pa
     assert bot.telegram_offset is None
 
 
+def test_scan_command_returns_latest_symbol_rows(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    bot = TrendBot(settings)
+    settings.scan_diagnostics_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "symbol": "TAOUSDT",
+                        "close": 277.9,
+                        "breakout_high": 287.0,
+                        "trend_score": 2.70,
+                        "eligible": False,
+                        "failed_reasons": ["close_below_breakout_high"],
+                        "timestamp_utc": "2026-03-20T02:00:00+00:00",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "symbol": "TAOUSDT",
+                        "close": 287.7,
+                        "breakout_high": 290.0,
+                        "trend_score": 3.00,
+                        "eligible": False,
+                        "failed_reasons": ["close_below_breakout_high"],
+                        "timestamp_utc": "2026-03-20T04:00:00+00:00",
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    reply = bot._handle_telegram_command("/scan TAOUSDT")
+
+    assert "Latest scan diagnostics for TAOUSDT" in reply
+    assert "2026-03-20T04:00:00+00:00" in reply
+    assert "close_below_breakout_high" in reply
+
+
+def test_scan_command_without_symbol_returns_latest_snapshot(tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    bot = TrendBot(settings)
+    settings.scan_diagnostics_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "symbol": "BTCUSDT",
+                        "close": 100.0,
+                        "breakout_high": 99.0,
+                        "trend_score": 1.5,
+                        "eligible": True,
+                        "failed_reasons": [],
+                        "timestamp_utc": "2026-03-20T04:00:00+00:00",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "symbol": "ETHUSDT",
+                        "close": 90.0,
+                        "breakout_high": 99.0,
+                        "trend_score": -0.5,
+                        "eligible": False,
+                        "failed_reasons": ["close_below_breakout_high"],
+                        "timestamp_utc": "2026-03-20T04:00:00+00:00",
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    reply = bot._handle_telegram_command("/scan")
+
+    assert "Latest scan snapshot 2026-03-20T04:00:00+00:00" in reply
+    assert "BTCUSDT: score=1.50 eligible=True" in reply
+    assert "ETHUSDT: score=-0.50 eligible=False" in reply
+
+
 def test_run_cycle_live_submitted_order_does_not_create_position(monkeypatch, tmp_path) -> None:
     settings = build_settings(tmp_path, live_trading=True)
     bot = TrendBot(settings)

@@ -462,6 +462,65 @@ class TrendBot:
             f"- positions: {len(self.state.positions)}"
         )
 
+    def _load_scan_diagnostics(self) -> list[dict[str, object]]:
+        path = self.settings.scan_diagnostics_path
+        if not path.exists():
+            return []
+        rows: list[dict[str, object]] = []
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+        return rows
+
+    def _format_scan_command(self, command: str) -> str:
+        rows = self._load_scan_diagnostics()
+        if not rows:
+            return "No scan diagnostics found yet."
+
+        parts = command.split()
+        symbol = parts[1].upper().strip() if len(parts) > 1 else None
+        if symbol:
+            filtered = [row for row in rows if str(row.get("symbol", "")).upper() == symbol]
+            if not filtered:
+                return f"No scan diagnostics found for {symbol}."
+            selected = filtered[-5:]
+            lines = [f"Latest scan diagnostics for {symbol}:"]
+            for row in selected:
+                failed_reasons = row.get("failed_reasons") or []
+                reason_text = ", ".join(str(item) for item in failed_reasons) if failed_reasons else "passed"
+                score = row.get("trend_score")
+                score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else "n/a"
+                lines.append(
+                    f"- {row.get('timestamp_utc')}: close={row.get('close')} breakout={row.get('breakout_high')} "
+                    f"score={score_text} eligible={row.get('eligible')} reason={reason_text}"
+                )
+            return "\n".join(lines)
+
+        latest_ts = str(rows[-1].get("timestamp_utc"))
+        latest_rows = [row for row in rows if str(row.get("timestamp_utc")) == latest_ts]
+        latest_rows.sort(
+            key=lambda row: float(row.get("trend_score")) if isinstance(row.get("trend_score"), (int, float)) else float("-inf"),
+            reverse=True,
+        )
+        lines = [f"Latest scan snapshot {latest_ts}:"]
+        for row in latest_rows[:10]:
+            failed_reasons = row.get("failed_reasons") or []
+            reason_text = ", ".join(str(item) for item in failed_reasons[:2]) if failed_reasons else "passed"
+            score = row.get("trend_score")
+            score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else "n/a"
+            lines.append(
+                f"- {row.get('symbol')}: score={score_text} eligible={row.get('eligible')} "
+                f"close={row.get('close')} breakout={row.get('breakout_high')} reason={reason_text}"
+            )
+        return "\n".join(lines)
+
     def _help_text(self) -> str:
         return (
             "Available commands:\n"
@@ -472,7 +531,8 @@ class TrendBot:
             "/orders - pending Roostoo orders\n"
             "/positions - local bot positions\n"
             "/state - local bot state summary\n"
-            "/config - active strategy/runtime config"
+            "/config - active strategy/runtime config\n"
+            "/scan [SYMBOL] - latest scan diagnostics"
         )
 
     def _handle_telegram_command(self, command: str) -> str:
@@ -499,6 +559,8 @@ class TrendBot:
             return self._format_state()
         if base == "/config":
             return self._format_config()
+        if base == "/scan":
+            return self._format_scan_command(command)
         return "Unknown command. Use /help"
 
     def poll_telegram_commands(self) -> None:
