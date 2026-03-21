@@ -608,3 +608,46 @@ def test_run_cycle_filled_exit_notification_includes_pnl_and_r(monkeypatch, tmp_
     assert any("EXIT BTCUSDT" in message for message in sent_messages)
     assert any("P/L: +10.00 (+5.00%) | R: +1.00R" in message for message in sent_messages)
     assert any("Reason: stop" in message for message in sent_messages)
+
+
+def test_reconcile_outstanding_sell_sends_final_exit_notification(tmp_path, monkeypatch) -> None:
+    settings = build_settings(tmp_path, live_trading=True)
+    bot = TrendBot(settings)
+    sent_messages: list[str] = []
+    bot.notifier.send = lambda text: sent_messages.append(text)  # type: ignore[method-assign]
+    bot.state.last_equity = 49_772.0
+    bot.state.outstanding_orders["2776812"] = {
+        "symbol": "FETUSDT",
+        "side": "sell",
+        "quantity": 8254.7,
+        "order_type": "limit",
+        "price": 0.2199,
+        "reason": "trend_ema_break",
+        "stop_price": 0.2010,
+        "position_before": {
+            "symbol": "FETUSDT",
+            "units": 8254.7,
+            "target_notional": 1921.49,
+            "tranches_filled": 1,
+            "stop_price": 0.2010,
+            "peak_close": 0.2404,
+            "hold_bars": 5,
+            "avg_entry": 0.2328,
+            "bars_since_last_fill": 2,
+        },
+    }
+
+    account = AccountSnapshot(
+        timestamp="2026-03-20T19:05:00+00:00",
+        cash=43_192.0,
+        equity=49_772.0,
+        open_orders=[],
+        raw={"balances": {"SpotWallet": {"USD": {"Free": 43192, "Lock": 0}}}},
+    )
+
+    bot._reconcile_outstanding_orders(account)
+
+    assert "2776812" not in bot.state.outstanding_orders
+    assert any("EXIT FETUSDT" in message for message in sent_messages)
+    assert any("Entry: 0.23280 | Exit: 0.21990" in message for message in sent_messages)
+    assert any("Reason: trend ema break" in message for message in sent_messages)

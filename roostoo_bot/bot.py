@@ -495,6 +495,93 @@ class TrendBot:
             f"{error_line}"
         )
 
+    @staticmethod
+    def _open_order_ids(open_orders: list[dict[str, object]]) -> set[str]:
+        ids: set[str] = set()
+        for order in open_orders:
+            if not isinstance(order, dict):
+                continue
+            order_id = order.get("OrderID") or order.get("order_id")
+            if order_id is not None:
+                ids.add(str(order_id))
+        return ids
+
+    def _track_outstanding_order(
+        self,
+        instruction: OrderInstruction,
+        response: dict[str, object],
+        order_status: str,
+        fill_price: float,
+        position_before: PositionState | None,
+    ) -> None:
+        if order_status not in {"submitted", "pending", "open", "new"}:
+            return
+        order_id = response.get("order_id") or response.get("OrderID")
+        order_detail = response.get("OrderDetail")
+        if not order_id and isinstance(order_detail, dict):
+            order_id = order_detail.get("OrderID")
+        if not order_id:
+            return
+        payload: dict[str, object] = {
+            "symbol": instruction.symbol,
+            "side": instruction.side,
+            "quantity": instruction.quantity,
+            "order_type": instruction.order_type,
+            "price": fill_price,
+            "reason": instruction.reason,
+            "stop_price": instruction.stop_price,
+        }
+        if position_before is not None:
+            payload["position_before"] = asdict(position_before)
+        self.state.outstanding_orders[str(order_id)] = payload
+
+    def _reconcile_outstanding_orders(self, account: AccountSnapshot) -> None:
+        if not self.state.outstanding_orders:
+            return
+        open_ids = self._open_order_ids(account.open_orders)
+        settled_ids: list[str] = []
+        held_symbols = set(self.state.positions)
+
+        for order_id, payload in self.state.outstanding_orders.items():
+            if order_id in open_ids:
+                continue
+
+            symbol = str(payload.get("symbol", ""))
+            side = str(payload.get("side", "")).lower()
+            is_filled = False
+            if side == "buy" and symbol in held_symbols:
+                is_filled = True
+            elif side == "sell" and symbol not in held_symbols:
+                is_filled = True
+
+            if is_filled:
+                instruction = OrderInstruction(
+                    symbol=symbol,
+                    side=side,
+                    quantity=float(payload.get("quantity", 0.0) or 0.0),
+                    order_type=str(payload.get("order_type", "limit")),
+                    limit_price=float(payload.get("price", 0.0) or 0.0),
+                    reason=str(payload.get("reason", "")),
+                    stop_price=float(payload.get("stop_price", 0.0) or 0.0),
+                    reference_close=float(payload.get("price", 0.0) or 0.0),
+                )
+                position_before = None
+                stored_position = payload.get("position_before")
+                if isinstance(stored_position, dict):
+                    position_before = PositionState(**stored_position)
+                self._notify_order_event(
+                    instruction,
+                    {"order_id": order_id},
+                    "filled",
+                    float(payload.get("price", 0.0) or 0.0),
+                    position_before=position_before,
+                )
+
+            settled_ids.append(order_id)
+
+        for order_id in settled_ids:
+            self.state.outstanding_orders.pop(order_id, None)
+
     def _send_scan_summary(self, eligible: list[str], actions: list[OrderInstruction], signal_ts: pd.Timestamp) -> None:
         top = ", ".join(eligible[:5]) if eligible else "none"
         action_text = ", ".join(
@@ -862,6 +949,7 @@ class TrendBot:
         if self.settings.live_trading and self.roostoo.is_configured():
             self._reconcile_live_positions(account, candle_map, signal_ts)
             self._mark_to_market(candle_map, signal_ts)
+            self._reconcile_outstanding_orders(account)
 
         snapshot = self.strategy.evaluate(candle_map, self.state, account, signal_ts)
         touched: set[str] = set()
@@ -876,6 +964,7 @@ class TrendBot:
                 self._mark_to_market(candle_map, signal_ts)
             self._log_event(instruction, response, order_status, signal_ts, cash_before, equity_before)
             self._notify_order_event(instruction, response, order_status, fill_price, position_before=position_before)
+            self._track_outstanding_order(instruction, response, order_status, fill_price, position_before)
             self.logger.info(
                 "Order %s %s %.6f @ %.4f | reason=%s | status=%s",
                 instruction.side,
