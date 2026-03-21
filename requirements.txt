@@ -6,3 +6,5 @@ nbclient>=0.10.2,<1.0.0
 matplotlib>=3.9.2,<4.0.0
 seaborn>=0.13.2,<1.0.0
 pytest>=8.3.4,<9.0.0
+ipykernel>=6.29.5,<7.0.0
+
