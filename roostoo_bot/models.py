@@ -34,6 +34,9 @@ class PositionState:
     hold_bars: int
     avg_entry: float
     bars_since_last_fill: int
+    tp_base_units: float = 0.0
+    tp1_taken: bool = False
+    tp2_taken: bool = False
 
 
 @dataclass(slots=True)

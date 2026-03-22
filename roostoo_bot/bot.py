@@ -197,6 +197,9 @@ class TrendBot:
                     hold_bars=0,
                     avg_entry=fill_price,
                     bars_since_last_fill=0,
+                    tp_base_units=instruction.quantity,
+                    tp1_taken=False,
+                    tp2_taken=False,
                 )
             else:
                 total_units = existing.units + instruction.quantity
@@ -209,9 +212,23 @@ class TrendBot:
                 existing.stop_price = instruction.stop_price or existing.stop_price
                 existing.bars_since_last_fill = 0
                 existing.peak_close = max(existing.peak_close, instruction.reference_close or fill_price)
+                existing.tp_base_units = max(existing.tp_base_units, total_units)
         else:
             self.state.last_cash += notional
-            self.state.positions.pop(instruction.symbol, None)
+            existing = self.state.positions.get(instruction.symbol)
+            if existing is None:
+                return
+            remaining_units = existing.units - instruction.quantity
+            if instruction.reason == "take_profit_1":
+                existing.tp1_taken = True
+                existing.stop_price = max(existing.stop_price, existing.avg_entry)
+            elif instruction.reason == "take_profit_2":
+                existing.tp2_taken = True
+            if remaining_units <= 1e-9:
+                self.state.positions.pop(instruction.symbol, None)
+            else:
+                existing.units = remaining_units
+                existing.bars_since_last_fill = 0
 
     def _advance_positions(self, candle_map: dict[str, pd.DataFrame], signal_ts: pd.Timestamp, touched: set[str]) -> None:
         for symbol, position in self.state.positions.items():
@@ -327,6 +344,9 @@ class TrendBot:
                         "stop_price": stop_price,
                         "target_notional": float(row.get("notional", qty * price) or qty * price),
                         "tranches_filled": 1.0 if action == "entry" else 0.0,
+                        "tp_base_units": qty,
+                        "tp1_taken": False,
+                        "tp2_taken": False,
                     }
                 else:
                     total_units = existing["units"] + qty
@@ -338,6 +358,19 @@ class TrendBot:
                     existing["stop_price"] = stop_price or existing["stop_price"]
                     existing["target_notional"] = max(existing["target_notional"], float(row.get("notional", qty * price) or qty * price))
                     existing["tranches_filled"] += 1.0
+                    existing["tp_base_units"] = max(existing["tp_base_units"], total_units)
+            elif action == "partial_exit":
+                existing = ledger.get(symbol)
+                if existing is None:
+                    continue
+                existing["units"] = max(0.0, existing["units"] - qty)
+                if row.get("reason") == "take_profit_1":
+                    existing["tp1_taken"] = True
+                    existing["stop_price"] = max(existing["stop_price"], existing["avg_entry"])
+                elif row.get("reason") == "take_profit_2":
+                    existing["tp2_taken"] = True
+                if existing["units"] <= 1e-9:
+                    ledger.pop(symbol, None)
             elif action == "full_exit":
                 ledger.pop(symbol, None)
         return ledger
@@ -380,6 +413,9 @@ class TrendBot:
             existing = self.state.positions.get(symbol)
             hold_bars = existing.hold_bars if existing is not None else 0
             bars_since_last_fill = existing.bars_since_last_fill if existing is not None else 0
+            tp_base_units = float(ledger_row.get("tp_base_units", units))
+            tp1_taken = bool(ledger_row.get("tp1_taken", False))
+            tp2_taken = bool(ledger_row.get("tp2_taken", False))
             reconciled[symbol] = PositionState(
                 symbol=symbol,
                 units=units,
@@ -390,6 +426,9 @@ class TrendBot:
                 hold_bars=hold_bars,
                 avg_entry=avg_entry or (close_price or 0.0),
                 bars_since_last_fill=bars_since_last_fill,
+                tp_base_units=max(tp_base_units, units),
+                tp1_taken=tp1_taken,
+                tp2_taken=tp2_taken,
             )
 
         self.state.positions = reconciled
@@ -408,8 +447,12 @@ class TrendBot:
             {
                 "timestamp_utc": signal_ts.isoformat(),
                 "symbol": instruction.symbol,
-                "action": "entry" if instruction.reason == "trend_entry" else (
-                    "add" if instruction.reason == "trend_add" else "full_exit"
+                "action": (
+                    "entry" if instruction.reason == "trend_entry" else (
+                        "add" if instruction.reason == "trend_add" else (
+                            "partial_exit" if instruction.reason in {"take_profit_1", "take_profit_2"} else "full_exit"
+                        )
+                    )
                 ),
                 "reason": instruction.reason,
                 "trend_score": instruction.trend_score,
@@ -459,13 +502,24 @@ class TrendBot:
             total_risk = risk_per_unit * qty
             r_text = f"{(pnl / total_risk):+.2f}R" if total_risk > 0 else "n/a"
             reason = instruction.reason.replace("_", " ")
-            self.notifier.send(
-                f"[{self.settings.bot_name}] EXIT {instruction.symbol}\n"
-                f"Qty: {qty:.6f} | Entry: {self._format_price(entry_price)} | Exit: {self._format_price(fill_price)}\n"
-                f"P/L: {pnl:+.2f} ({pnl_pct:+.2f}%) | R: {r_text}\n"
-                f"Reason: {reason}\n"
-                f"Open positions: {len(self.state.positions)} | Equity: {self.state.last_equity:,.2f}"
-            )
+            if instruction.reason in {"take_profit_1", "take_profit_2"}:
+                remaining_units = self.state.positions.get(instruction.symbol).units if instruction.symbol in self.state.positions else 0.0
+                stop_price = self.state.positions.get(instruction.symbol).stop_price if instruction.symbol in self.state.positions else position_before.stop_price
+                self.notifier.send(
+                    f"[{self.settings.bot_name}] TAKE PROFIT {instruction.symbol}\n"
+                    f"Qty: {qty:.6f} | Entry: {self._format_price(entry_price)} | Exit: {self._format_price(fill_price)}\n"
+                    f"P/L: {pnl:+.2f} ({pnl_pct:+.2f}%) | R: {r_text}\n"
+                    f"Reason: {reason} | Remaining qty: {self._format_units(remaining_units)} | Stop: {self._format_price(stop_price)}\n"
+                    f"Open positions: {len(self.state.positions)} | Equity: {self.state.last_equity:,.2f}"
+                )
+            else:
+                self.notifier.send(
+                    f"[{self.settings.bot_name}] EXIT {instruction.symbol}\n"
+                    f"Qty: {qty:.6f} | Entry: {self._format_price(entry_price)} | Exit: {self._format_price(fill_price)}\n"
+                    f"P/L: {pnl:+.2f} ({pnl_pct:+.2f}%) | R: {r_text}\n"
+                    f"Reason: {reason}\n"
+                    f"Open positions: {len(self.state.positions)} | Equity: {self.state.last_equity:,.2f}"
+                )
             return
         if order_status == "filled":
             title = "Order filled"
@@ -549,10 +603,18 @@ class TrendBot:
             symbol = str(payload.get("symbol", ""))
             side = str(payload.get("side", "")).lower()
             is_filled = False
+            current_position = self.state.positions.get(symbol)
             if side == "buy" and symbol in held_symbols:
                 is_filled = True
             elif side == "sell" and symbol not in held_symbols:
                 is_filled = True
+            elif side == "sell" and current_position is not None:
+                stored_position = payload.get("position_before")
+                if isinstance(stored_position, dict):
+                    before_units = float(stored_position.get("units", 0.0) or 0.0)
+                    expected_units = max(0.0, before_units - float(payload.get("quantity", 0.0) or 0.0))
+                    if current_position.units <= expected_units + 1e-6:
+                        is_filled = True
 
             if is_filled:
                 instruction = OrderInstruction(

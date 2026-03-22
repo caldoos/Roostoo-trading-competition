@@ -165,6 +165,55 @@ class TrendOnlyStrategy:
             elif position.hold_bars >= self.settings.max_hold_bars:
                 exit_reason = "max_hold"
             if exit_reason is None:
+                tp_quantity = max(position.tp_base_units * 0.33, 0.0)
+                if not position.tp1_taken and close_price >= position.avg_entry * 1.10:
+                    if tp_quantity > 0:
+                        if symbol in diagnostics:
+                            diagnostics[symbol].selected_for_exit = True
+                        available_cash += min(position.units, tp_quantity) * close_price
+                        actions.append(
+                            OrderInstruction(
+                                symbol=symbol,
+                                side="sell",
+                                quantity=min(position.units, tp_quantity),
+                                order_type=self.settings.default_order_type,
+                                limit_price=close_price if self.settings.default_order_type == "limit" else None,
+                                reason="take_profit_1",
+                                target_notional=position.target_notional,
+                                stop_price=max(position.stop_price, position.avg_entry),
+                                trend_score=trend_scores.get(symbol),
+                                breakout_high=float(row["breakout_high"]) if pd.notna(row["breakout_high"]) else None,
+                                exit_low=float(row["exit_low"]) if pd.notna(row["exit_low"]) else None,
+                                trend_ema=float(row["trend_ema"]) if pd.notna(row["trend_ema"]) else None,
+                                trend_ema_slope=float(row["trend_ema_slope"]) if pd.notna(row["trend_ema_slope"]) else None,
+                                reference_close=close_price,
+                            )
+                        )
+                    continue
+                if not position.tp2_taken and close_price >= position.avg_entry * 1.20:
+                    if tp_quantity > 0:
+                        if symbol in diagnostics:
+                            diagnostics[symbol].selected_for_exit = True
+                        available_cash += min(position.units, tp_quantity) * close_price
+                        actions.append(
+                            OrderInstruction(
+                                symbol=symbol,
+                                side="sell",
+                                quantity=min(position.units, tp_quantity),
+                                order_type=self.settings.default_order_type,
+                                limit_price=close_price if self.settings.default_order_type == "limit" else None,
+                                reason="take_profit_2",
+                                target_notional=position.target_notional,
+                                stop_price=position.stop_price,
+                                trend_score=trend_scores.get(symbol),
+                                breakout_high=float(row["breakout_high"]) if pd.notna(row["breakout_high"]) else None,
+                                exit_low=float(row["exit_low"]) if pd.notna(row["exit_low"]) else None,
+                                trend_ema=float(row["trend_ema"]) if pd.notna(row["trend_ema"]) else None,
+                                trend_ema_slope=float(row["trend_ema_slope"]) if pd.notna(row["trend_ema_slope"]) else None,
+                                reference_close=close_price,
+                            )
+                        )
+                    continue
                 continue
             exited_symbols.add(symbol)
             if symbol in diagnostics:
@@ -205,6 +254,9 @@ class TrendOnlyStrategy:
             position = state.positions[symbol]
             frame = feature_frames[symbol]
             row = frame.loc[signal_ts]
+            if position.tp1_taken or position.tp2_taken:
+                diagnostics[symbol].failed_reasons.append("take_profit_taken_no_add")
+                continue
             if position.tranches_filled >= 3:
                 diagnostics[symbol].failed_reasons.append("max_tranches_reached")
                 continue

@@ -651,3 +651,65 @@ def test_reconcile_outstanding_sell_sends_final_exit_notification(tmp_path, monk
     assert any("EXIT FETUSDT" in message for message in sent_messages)
     assert any("Entry: 0.23280 | Exit: 0.21990" in message for message in sent_messages)
     assert any("Reason: trend ema break" in message for message in sent_messages)
+
+
+def test_run_cycle_filled_take_profit_reduces_position_and_sends_notification(monkeypatch, tmp_path) -> None:
+    settings = build_settings(tmp_path)
+    bot = TrendBot(settings)
+    frame = make_frame([100 + i for i in range(30)])
+    signal_ts = frame.index[-1]
+    candle_map = {"BTCUSDT": frame}
+
+    bot.state.positions["BTCUSDT"] = PositionState(
+        symbol="BTCUSDT",
+        units=9.0,
+        target_notional=900.0,
+        tranches_filled=1,
+        stop_price=95.0,
+        peak_close=120.0,
+        hold_bars=3,
+        avg_entry=100.0,
+        bars_since_last_fill=1,
+        tp_base_units=9.0,
+        tp1_taken=False,
+        tp2_taken=False,
+    )
+    bot.state.last_cash = 10_000.0
+    bot.state.last_equity = 10_900.0
+
+    monkeypatch.setattr(bot, "refresh_candles", lambda: candle_map)
+    monkeypatch.setattr(bot, "_send_scan_summary", lambda eligible, actions, ts: None)
+    sent_messages: list[str] = []
+    monkeypatch.setattr(bot.notifier, "send", lambda text: sent_messages.append(text))
+    monkeypatch.setattr(
+        bot.strategy,
+        "evaluate",
+        lambda candle_map, state, account, signal_ts: StrategySnapshot(
+            timestamp=signal_ts.isoformat(),
+            ranked_symbols=[],
+            eligible_symbols=[],
+            trend_scores={},
+            actions=[
+                OrderInstruction(
+                    symbol="BTCUSDT",
+                    side="sell",
+                    quantity=2.97,
+                    order_type="limit",
+                    limit_price=110.0,
+                    reason="take_profit_1",
+                    target_notional=900.0,
+                    stop_price=100.0,
+                    reference_close=110.0,
+                )
+            ],
+        ),
+    )
+
+    processed = bot.run_cycle()
+
+    assert processed is True
+    assert round(bot.state.positions["BTCUSDT"].units, 6) == 6.03
+    assert bot.state.positions["BTCUSDT"].tp1_taken is True
+    assert bot.state.positions["BTCUSDT"].stop_price == 100.0
+    assert any("TAKE PROFIT BTCUSDT" in message for message in sent_messages)
+    assert any("Remaining qty: 6.03 | Stop: 100.0000" in message for message in sent_messages)
