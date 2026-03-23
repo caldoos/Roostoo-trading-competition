@@ -65,6 +65,9 @@ class Settings:
     exit_lookback: int
     max_hold_bars: int
     trailing_stop_pct: float
+    take_profit_1_pct: float
+    take_profit_2_pct: float
+    trend_ema_exit_buffer_pct: float
     tranche_scheme: tuple[float, float, float]
     add_delay_bars: int
     use_btc_filter: bool
@@ -175,6 +178,9 @@ def load_settings() -> Settings:
         exit_lookback=int(os.getenv("EXIT_LOOKBACK", "24")),
         max_hold_bars=int(os.getenv("MAX_HOLD_BARS", "216")),
         trailing_stop_pct=float(os.getenv("TRAILING_STOP_PCT", "0.08")),
+        take_profit_1_pct=float(os.getenv("TAKE_PROFIT_1_PCT", "0.05")),
+        take_profit_2_pct=float(os.getenv("TAKE_PROFIT_2_PCT", "0.15")),
+        trend_ema_exit_buffer_pct=float(os.getenv("TREND_EMA_EXIT_BUFFER_PCT", "0.025")),
         tranche_scheme=_parse_tranche_scheme(os.getenv("TRANCHE_SCHEME", "0.35,0.35,0.30")),
         add_delay_bars=int(os.getenv("ADD_DELAY_BARS", "8")),
         use_btc_filter=os.getenv("USE_BTC_FILTER", "false").lower() == "true",

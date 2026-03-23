@@ -21,7 +21,7 @@ class TrendOnlyStrategy:
             data["trend_ema"] = data["close"].ewm(span=self.settings.ema_span, adjust=False).mean()
             data["trend_ema_slope"] = data["trend_ema"].diff()
             data["momentum_return"] = data["close"].pct_change(self.settings.momentum_bars)
-            data["breakout_high"] = data["high"].shift(1).rolling(self.settings.breakout_lookback).max()
+            data["breakout_high"] = data["close"].shift(1).rolling(self.settings.breakout_lookback).max()
             data["exit_low"] = data["low"].shift(1).rolling(self.settings.exit_lookback).min()
             data["base_entry"] = (
                 (data["close"] > data["breakout_high"])
@@ -153,6 +153,7 @@ class TrendOnlyStrategy:
             row = frame.loc[signal_ts]
             close_price = float(row["close"])
             trailing_stop = position.peak_close * (1 - self.settings.trailing_stop_pct)
+            trend_ema_exit_level = float(row["trend_ema"]) * (1 - self.settings.trend_ema_exit_buffer_pct)
             exit_reason: str | None = None
             if close_price <= position.stop_price:
                 exit_reason = "stop"
@@ -160,13 +161,13 @@ class TrendOnlyStrategy:
                 exit_reason = "trailing_stop"
             elif close_price < float(row["exit_low"]):
                 exit_reason = "exit_low_break"
-            elif close_price < float(row["trend_ema"]):
+            elif close_price < trend_ema_exit_level:
                 exit_reason = "trend_ema_break"
             elif position.hold_bars >= self.settings.max_hold_bars:
                 exit_reason = "max_hold"
             if exit_reason is None:
-                tp_quantity = max(position.tp_base_units * 0.33, 0.0)
-                if not position.tp1_taken and close_price >= position.avg_entry * 1.10:
+                if not position.tp1_taken and close_price >= position.avg_entry * (1 + self.settings.take_profit_1_pct):
+                    tp_quantity = max(position.tp_base_units * 0.33, 0.0)
                     if tp_quantity > 0:
                         if symbol in diagnostics:
                             diagnostics[symbol].selected_for_exit = True
@@ -190,7 +191,8 @@ class TrendOnlyStrategy:
                             )
                         )
                     continue
-                if not position.tp2_taken and close_price >= position.avg_entry * 1.20:
+                if not position.tp2_taken and close_price >= position.avg_entry * (1 + self.settings.take_profit_2_pct):
+                    tp_quantity = max(position.tp_base_units * 0.50, 0.0)
                     if tp_quantity > 0:
                         if symbol in diagnostics:
                             diagnostics[symbol].selected_for_exit = True

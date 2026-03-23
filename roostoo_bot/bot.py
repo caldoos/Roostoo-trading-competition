@@ -843,6 +843,9 @@ class TrendBot:
             f"- exit_lookback: {self.settings.exit_lookback}\n"
             f"- max_hold_bars: {self.settings.max_hold_bars}\n"
             f"- trailing_stop_pct: {self.settings.trailing_stop_pct:.2f}\n"
+            f"- take_profit_1_pct: {self.settings.take_profit_1_pct:.2f}\n"
+            f"- take_profit_2_pct: {self.settings.take_profit_2_pct:.2f}\n"
+            f"- trend_ema_exit_buffer_pct: {self.settings.trend_ema_exit_buffer_pct:.3f}\n"
             f"- tranche_scheme: {self.settings.tranche_scheme}\n"
             f"- use_btc_filter: {self.settings.use_btc_filter}\n"
             f"- live_trading: {self.settings.live_trading}"
@@ -893,7 +896,7 @@ class TrendBot:
                 score = row.get("trend_score")
                 score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else "n/a"
                 lines.append(
-                    f"- {row.get('timestamp_utc')}: close={row.get('close')} breakout={row.get('breakout_high')} "
+                    f"- {row.get('timestamp_utc')}: close={row.get('close')} breakout_level={row.get('breakout_high')} "
                     f"score={score_text} eligible={row.get('eligible')} reason={reason_text}"
                 )
             return "\n".join(lines)
@@ -912,7 +915,7 @@ class TrendBot:
             score_text = f"{float(score):.2f}" if isinstance(score, (int, float)) else "n/a"
             lines.append(
                 f"- {row.get('symbol')}: score={score_text} eligible={row.get('eligible')} "
-                f"close={row.get('close')} breakout={row.get('breakout_high')} reason={reason_text}"
+                f"close={row.get('close')} breakout_level={row.get('breakout_high')} reason={reason_text}"
             )
         return "\n".join(lines)
 

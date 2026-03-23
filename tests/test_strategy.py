@@ -23,6 +23,29 @@ def test_strategy_generates_entry_for_eligible_symbol(tmp_path) -> None:
     assert any(action.reason == "trend_entry" and action.symbol == "ETHUSDT" for action in snapshot.actions)
 
 
+def test_strategy_breakout_uses_previous_highest_close_not_wick_high(tmp_path) -> None:
+    settings = build_settings(tmp_path, breakout_lookback=3, exit_lookback=3)
+    strategy = TrendOnlyStrategy(settings)
+    index = pd.date_range("2026-01-01", periods=6, freq="4h", tz="UTC")
+    eth = pd.DataFrame(
+        {
+            "open": [100, 101, 102, 103, 104, 106],
+            "high": [110, 111, 112, 120, 108, 109],
+            "low": [99, 100, 101, 102, 103, 105],
+            "close": [101, 102, 103, 104, 106, 107],
+            "volume": [1000] * 6,
+        },
+        index=index,
+    )
+    candle_map = {"ETHUSDT": eth}
+    signal_ts = eth.index[-1]
+    account = AccountSnapshot(timestamp=signal_ts.isoformat(), cash=1_000_000.0, equity=1_000_000.0)
+
+    snapshot = strategy.evaluate(candle_map, BotState(), account, signal_ts)
+
+    assert any(action.reason == "trend_entry" and action.symbol == "ETHUSDT" for action in snapshot.actions)
+
+
 def test_strategy_generates_exit_for_existing_position(tmp_path) -> None:
     settings = build_settings(tmp_path)
     strategy = TrendOnlyStrategy(settings)
@@ -49,6 +72,34 @@ def test_strategy_generates_exit_for_existing_position(tmp_path) -> None:
     snapshot = strategy.evaluate(candle_map, state, account, signal_ts)
 
     assert any(action.reason == "stop" and action.symbol == "ETHUSDT" for action in snapshot.actions)
+
+
+def test_strategy_does_not_exit_on_small_close_below_trend_ema_with_buffer(tmp_path) -> None:
+    settings = build_settings(tmp_path, trend_ema_exit_buffer_pct=0.025)
+    strategy = TrendOnlyStrategy(settings)
+    eth = make_frame([100] * 24 + [104, 108, 112, 116, 120, 118], high_pad=2.0, low_pad=1.0)
+    candle_map = {"ETHUSDT": eth}
+    signal_ts = eth.index[-1]
+    state = BotState(
+        positions={
+            "ETHUSDT": PositionState(
+                symbol="ETHUSDT",
+                units=10.0,
+                target_notional=1000.0,
+                tranches_filled=1,
+                stop_price=90.0,
+                peak_close=120.0,
+                hold_bars=1,
+                avg_entry=110.0,
+                bars_since_last_fill=3,
+            )
+        }
+    )
+    account = AccountSnapshot(timestamp=signal_ts.isoformat(), cash=1000.0, equity=2000.0)
+
+    snapshot = strategy.evaluate(candle_map, state, account, signal_ts)
+
+    assert not any(action.reason == "trend_ema_break" and action.symbol == "ETHUSDT" for action in snapshot.actions)
 
 
 def test_strategy_generates_add_after_delay(tmp_path) -> None:
@@ -145,3 +196,36 @@ def test_strategy_generates_take_profit_and_moves_stop_to_breakeven(tmp_path) ->
     assert len(tp_actions) == 1
     assert tp_actions[0].quantity == 2.97
     assert tp_actions[0].stop_price == 100.0
+
+
+def test_strategy_generates_second_take_profit_at_fifteen_percent(tmp_path) -> None:
+    settings = build_settings(tmp_path, take_profit_1_pct=0.05, take_profit_2_pct=0.15)
+    strategy = TrendOnlyStrategy(settings)
+    eth = make_frame([100] * 24 + [102, 104, 106, 108, 112, 115], high_pad=2.0, low_pad=1.0)
+    candle_map = {"ETHUSDT": eth}
+    signal_ts = eth.index[-1]
+    state = BotState(
+        positions={
+            "ETHUSDT": PositionState(
+                symbol="ETHUSDT",
+                units=6.03,
+                target_notional=1000.0,
+                tranches_filled=1,
+                stop_price=100.0,
+                peak_close=115.0,
+                hold_bars=6,
+                avg_entry=100.0,
+                bars_since_last_fill=3,
+                tp_base_units=9.0,
+                tp1_taken=True,
+                tp2_taken=False,
+            )
+        }
+    )
+    account = AccountSnapshot(timestamp=signal_ts.isoformat(), cash=1000.0, equity=2000.0)
+
+    snapshot = strategy.evaluate(candle_map, state, account, signal_ts)
+
+    tp_actions = [action for action in snapshot.actions if action.reason == "take_profit_2"]
+    assert len(tp_actions) == 1
+    assert tp_actions[0].quantity == 4.5
