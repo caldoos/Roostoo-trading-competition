@@ -420,6 +420,39 @@ def test_orders_upgrades_live_pending_buy_to_filled_and_formats_qty(monkeypatch,
     assert "FLOKIUSDT | buy qty 115131578.947368 @ 0.00003040 | filled" in reply
 
 
+def test_reconcile_live_positions_preserves_existing_stop_when_ledger_missing(tmp_path) -> None:
+    settings = build_settings(tmp_path, live_trading=True)
+    bot = TrendBot(settings)
+    frame = make_frame([0.09 + i * 0.001 for i in range(30)], high_pad=0.002, low_pad=0.002)
+    candle_map = {"ENAUSDT": frame}
+    signal_ts = frame.index[-1]
+    bot.state.positions["ENAUSDT"] = PositionState(
+        symbol="ENAUSDT",
+        units=269865.28,
+        target_notional=26150.0,
+        tranches_filled=1,
+        stop_price=0.091,
+        peak_close=0.099,
+        hold_bars=10,
+        avg_entry=0.0969,
+        bars_since_last_fill=1,
+        tp_base_units=269865.28,
+        tp1_taken=False,
+        tp2_taken=False,
+    )
+    account = AccountSnapshot(
+        timestamp=signal_ts.isoformat(),
+        cash=900000.0,
+        equity=1020000.0,
+        open_orders=[],
+        raw={"balances": {"SpotWallet": {"USD": {"Free": 900000, "Lock": 0}, "ENA": {"Free": 269865.28, "Lock": 0}}}},
+    )
+
+    bot._reconcile_live_positions(account, candle_map, signal_ts)
+
+    assert bot.state.positions["ENAUSDT"].stop_price == 0.091
+
+
 def test_run_cycle_live_submitted_order_does_not_create_position(monkeypatch, tmp_path) -> None:
     settings = build_settings(tmp_path, live_trading=True)
     bot = TrendBot(settings)

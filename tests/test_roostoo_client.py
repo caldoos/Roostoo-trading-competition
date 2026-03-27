@@ -209,3 +209,45 @@ def test_roostoo_place_order_does_not_retry_on_http_error(monkeypatch, tmp_path)
         raise AssertionError("Expected HTTPError from non-retried place_order call.")
 
     assert attempts["count"] == 1
+
+
+def test_roostoo_place_order_refreshes_pair_rules_on_step_size_error(monkeypatch, tmp_path) -> None:
+    client = RoostooClient(build_settings(tmp_path))
+    symbol_calls = {"count": 0}
+    requests_seen: list[dict[str, object]] = []
+
+    def fake_get_symbols():
+        symbol_calls["count"] += 1
+        precision = 2 if symbol_calls["count"] == 1 else 1
+        return {
+            "TradePairs": {
+                "ENA/USD": {
+                    "CanTrade": True,
+                    "PricePrecision": 4,
+                    "AmountPrecision": precision,
+                    "MiniOrder": 1,
+                }
+            }
+        }
+
+    def fake_request(method, path, *, params=None, signed=False):
+        requests_seen.append(dict(params or {}))
+        if len(requests_seen) == 1:
+            return {"Success": False, "ErrMsg": "quantity step size error"}
+        return {"Success": True, "OrderID": "ena-ok"}
+
+    monkeypatch.setattr(client, "get_symbols", fake_get_symbols)
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    response = client.place_order(
+        symbol="ENAUSDT",
+        side="sell",
+        quantity=269865.28,
+        order_type="limit",
+        price=0.0956,
+    )
+
+    assert response["Success"] is True
+    assert symbol_calls["count"] == 2
+    assert requests_seen[0]["quantity"] == 269865.28
+    assert requests_seen[1]["quantity"] == 269865.2

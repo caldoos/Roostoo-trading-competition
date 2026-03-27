@@ -26,6 +26,9 @@ class RoostooClient:
         self.session = requests.Session()
         self._trade_pair_cache: dict[str, dict[str, Any]] | None = None
 
+    def _clear_trade_pair_cache(self) -> None:
+        self._trade_pair_cache = None
+
     def is_configured(self) -> bool:
         return bool(self.base_url and self.api_key and self.api_secret)
 
@@ -283,6 +286,25 @@ class RoostooClient:
         if normalized.get("price") is not None:
             payload["price"] = normalized["price"]
         result = self._request("POST", self._endpoint("place_order", "/v3/place_order"), params=payload, signed=True)
+        error_text = str(result.get("ErrMsg", "")).lower() if isinstance(result, dict) else ""
+        if result.get("Success") is False and "step size" in error_text:
+            self._clear_trade_pair_cache()
+            refreshed = self.normalize_order_params(symbol=symbol, quantity=quantity, price=price)
+            if refreshed.get("ok"):
+                retry_payload: dict[str, Any] = {
+                    "pair": str(refreshed["pair"]),
+                    "side": side.upper(),
+                    "type": order_type.upper(),
+                    "quantity": refreshed["quantity"],
+                }
+                if refreshed.get("price") is not None:
+                    retry_payload["price"] = refreshed["price"]
+                result = self._request(
+                    "POST",
+                    self._endpoint("place_order", "/v3/place_order"),
+                    params=retry_payload,
+                    signed=True,
+                )
         return result if isinstance(result, dict) else {"raw": result}
 
     def cancel_order(self, order_id: str) -> dict[str, Any]:

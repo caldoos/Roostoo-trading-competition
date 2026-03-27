@@ -405,17 +405,27 @@ class TrendBot:
             elif frame is not None and not frame.empty:
                 close_price = float(frame["close"].iloc[-1])
             ledger_row = ledger.get(symbol, {})
-            avg_entry = float(ledger_row.get("avg_entry", close_price or 0.0))
-            stop_price = float(ledger_row.get("stop_price", 0.0))
-            target_notional = float(ledger_row.get("target_notional", units * (avg_entry or close_price or 0.0)))
-            tranches_filled = int(round(float(ledger_row.get("tranches_filled", 1.0))))
-            peak_close = max(close_price or avg_entry, avg_entry)
             existing = self.state.positions.get(symbol)
+            avg_entry = float(
+                ledger_row.get(
+                    "avg_entry",
+                    existing.avg_entry if existing is not None else (close_price or 0.0),
+                )
+            )
+            stop_price = float(ledger_row.get("stop_price", existing.stop_price if existing is not None else 0.0))
+            target_notional = float(
+                ledger_row.get(
+                    "target_notional",
+                    existing.target_notional if existing is not None else units * (avg_entry or close_price or 0.0),
+                )
+            )
+            tranches_filled = int(round(float(ledger_row.get("tranches_filled", existing.tranches_filled if existing is not None else 1.0))))
+            peak_close = max(close_price or avg_entry, existing.peak_close if existing is not None else avg_entry)
             hold_bars = existing.hold_bars if existing is not None else 0
             bars_since_last_fill = existing.bars_since_last_fill if existing is not None else 0
-            tp_base_units = float(ledger_row.get("tp_base_units", units))
-            tp1_taken = bool(ledger_row.get("tp1_taken", False))
-            tp2_taken = bool(ledger_row.get("tp2_taken", False))
+            tp_base_units = float(ledger_row.get("tp_base_units", existing.tp_base_units if existing is not None else units))
+            tp1_taken = bool(ledger_row.get("tp1_taken", existing.tp1_taken if existing is not None else False))
+            tp2_taken = bool(ledger_row.get("tp2_taken", existing.tp2_taken if existing is not None else False))
             reconciled[symbol] = PositionState(
                 symbol=symbol,
                 units=units,
