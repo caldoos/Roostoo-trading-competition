@@ -105,10 +105,6 @@ Eligible names are ranked by cross-sectional relative strength using recent mome
 
 Exits are evaluated in this order:
 
-- partial take profit:
-  - sell 33% at `+5%` from entry
-  - move stop to breakeven after TP1
-  - sell another 33% at `+15%` from entry
 - structure break: `close < trend_ema * (1 - trend_ema_exit_buffer_pct)` or `close < exit_low`
 - stop exit: `close <= stop_price`
 - trailing stop exit: `close <= peak_close * (1 - trailing_stop_pct)`
@@ -133,8 +129,6 @@ The current live candidate is the **1-hour equivalent** of the same core trend l
 - `exit_lookback = 24`
 - `max_hold_bars = 216` (roughly 9 trading days on 1h bars)
 - `trailing_stop_pct = 0.08`
-- `take_profit_1_pct = 0.05`
-- `take_profit_2_pct = 0.15`
 - `trend_ema_exit_buffer_pct = 0.025`
 - `tranche_scheme = (0.35, 0.35, 0.30)`
 - `add_delay_bars = 8`

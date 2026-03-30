@@ -853,8 +853,6 @@ class TrendBot:
             f"- exit_lookback: {self.settings.exit_lookback}\n"
             f"- max_hold_bars: {self.settings.max_hold_bars}\n"
             f"- trailing_stop_pct: {self.settings.trailing_stop_pct:.2f}\n"
-            f"- take_profit_1_pct: {self.settings.take_profit_1_pct:.2f}\n"
-            f"- take_profit_2_pct: {self.settings.take_profit_2_pct:.2f}\n"
             f"- trend_ema_exit_buffer_pct: {self.settings.trend_ema_exit_buffer_pct:.3f}\n"
             f"- tranche_scheme: {self.settings.tranche_scheme}\n"
             f"- use_btc_filter: {self.settings.use_btc_filter}\n"

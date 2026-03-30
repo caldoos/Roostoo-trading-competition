@@ -164,42 +164,8 @@ def test_strategy_exposes_failed_reasons_in_diagnostics(tmp_path) -> None:
     assert "close_below_trend_ema" in eth_diag.failed_reasons
 
 
-def test_strategy_generates_take_profit_and_moves_stop_to_breakeven(tmp_path) -> None:
+def test_strategy_does_not_generate_take_profit_actions(tmp_path) -> None:
     settings = build_settings(tmp_path)
-    strategy = TrendOnlyStrategy(settings)
-    eth = make_frame([100] * 24 + [102, 104, 106, 108, 110, 112], high_pad=2.0, low_pad=1.0)
-    candle_map = {"ETHUSDT": eth}
-    signal_ts = eth.index[-1]
-    state = BotState(
-        positions={
-            "ETHUSDT": PositionState(
-                symbol="ETHUSDT",
-                units=9.0,
-                target_notional=1000.0,
-                tranches_filled=1,
-                stop_price=95.0,
-                peak_close=112.0,
-                hold_bars=5,
-                avg_entry=100.0,
-                bars_since_last_fill=3,
-                tp_base_units=9.0,
-                tp1_taken=False,
-                tp2_taken=False,
-            )
-        }
-    )
-    account = AccountSnapshot(timestamp=signal_ts.isoformat(), cash=1000.0, equity=2000.0)
-
-    snapshot = strategy.evaluate(candle_map, state, account, signal_ts)
-
-    tp_actions = [action for action in snapshot.actions if action.reason == "take_profit_1"]
-    assert len(tp_actions) == 1
-    assert tp_actions[0].quantity == 2.97
-    assert tp_actions[0].stop_price == 100.0
-
-
-def test_strategy_generates_second_take_profit_at_fifteen_percent(tmp_path) -> None:
-    settings = build_settings(tmp_path, take_profit_1_pct=0.05, take_profit_2_pct=0.15)
     strategy = TrendOnlyStrategy(settings)
     eth = make_frame([100] * 24 + [102, 104, 106, 108, 112, 115], high_pad=2.0, low_pad=1.0)
     candle_map = {"ETHUSDT": eth}
@@ -217,7 +183,7 @@ def test_strategy_generates_second_take_profit_at_fifteen_percent(tmp_path) -> N
                 avg_entry=100.0,
                 bars_since_last_fill=3,
                 tp_base_units=9.0,
-                tp1_taken=True,
+                tp1_taken=False,
                 tp2_taken=False,
             )
         }
@@ -226,6 +192,4 @@ def test_strategy_generates_second_take_profit_at_fifteen_percent(tmp_path) -> N
 
     snapshot = strategy.evaluate(candle_map, state, account, signal_ts)
 
-    tp_actions = [action for action in snapshot.actions if action.reason == "take_profit_2"]
-    assert len(tp_actions) == 1
-    assert tp_actions[0].quantity == 4.5
+    assert not any(action.reason in {"take_profit_1", "take_profit_2"} for action in snapshot.actions)
