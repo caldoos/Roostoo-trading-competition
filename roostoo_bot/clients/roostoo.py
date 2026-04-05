@@ -189,21 +189,30 @@ class RoostooClient:
 
         qty_precision = int(rules.get("AmountPrecision", 8))
         normalized_qty = self._precision_quantize(quantity, qty_precision, rounding=ROUND_DOWN)
-        minimum_qty = self._safe_float(rules.get("MiniOrder"), 0.0)
-        if normalized_qty <= 0 or normalized_qty < minimum_qty:
+        if normalized_qty <= 0:
             return {
                 "ok": False,
                 "pair": self._normalize_pair(symbol),
-                "error": (
-                    f"Rounded quantity {normalized_qty} below MiniOrder {minimum_qty} "
-                    f"for {self._normalize_pair(symbol)}"
-                ),
+                "error": f"Rounded quantity {normalized_qty} is not positive for {self._normalize_pair(symbol)}",
             }
 
         normalized_price = price
         if price is not None:
             price_precision = int(rules.get("PricePrecision", 8))
             normalized_price = self._precision_quantize(price, price_precision, rounding=ROUND_HALF_UP)
+
+        minimum_notional = self._safe_float(rules.get("MiniOrder"), 0.0)
+        if minimum_notional > 0 and normalized_price is not None:
+            order_notional = normalized_qty * normalized_price
+            if order_notional < minimum_notional:
+                return {
+                    "ok": False,
+                    "pair": self._normalize_pair(symbol),
+                    "error": (
+                        f"Rounded notional {order_notional} below MiniOrder {minimum_notional} "
+                        f"for {self._normalize_pair(symbol)}"
+                    ),
+                }
 
         return {
             "ok": True,

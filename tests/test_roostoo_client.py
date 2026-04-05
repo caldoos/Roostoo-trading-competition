@@ -108,7 +108,50 @@ def test_roostoo_place_order_applies_pair_precision(monkeypatch, tmp_path) -> No
     }
 
 
-def test_roostoo_place_order_fails_when_rounded_quantity_below_minimum(monkeypatch, tmp_path) -> None:
+def test_roostoo_place_order_allows_fractional_quantity_when_notional_exceeds_mini_order(monkeypatch, tmp_path) -> None:
+    client = RoostooClient(build_settings(tmp_path))
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        client,
+        "get_symbols",
+        lambda: {
+            "TradePairs": {
+                "BTC/USD": {
+                    "CanTrade": True,
+                    "PricePrecision": 2,
+                    "AmountPrecision": 4,
+                    "MiniOrder": 1,
+                }
+            }
+        },
+    )
+
+    def fake_request(method, path, *, params=None, signed=False):
+        captured["params"] = params
+        return {"Success": True, "OrderID": "btc-ok"}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    response = client.place_order(
+        symbol="BTCUSDT",
+        side="buy",
+        quantity=0.311848,
+        order_type="limit",
+        price=67340.47,
+    )
+
+    assert response["Success"] is True
+    assert captured["params"] == {
+        "pair": "BTC/USD",
+        "side": "BUY",
+        "type": "LIMIT",
+        "quantity": 0.3118,
+        "price": 67340.47,
+    }
+
+
+def test_roostoo_place_order_fails_when_rounded_notional_below_mini_order(monkeypatch, tmp_path) -> None:
     client = RoostooClient(build_settings(tmp_path))
 
     monkeypatch.setattr(
@@ -129,13 +172,13 @@ def test_roostoo_place_order_fails_when_rounded_quantity_below_minimum(monkeypat
     response = client.place_order(
         symbol="TAOUSDT",
         side="buy",
-        quantity=0.123456,
+        quantity=0.001,
         order_type="limit",
         price=278.3,
     )
 
     assert response["Success"] is False
-    assert "MiniOrder" in response["ErrMsg"]
+    assert "Rounded notional" in response["ErrMsg"]
 
 
 def test_roostoo_safe_requests_retry_with_backoff(monkeypatch, tmp_path) -> None:
