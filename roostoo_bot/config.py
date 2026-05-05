@@ -80,7 +80,17 @@ class Settings:
     telegram_token: str
     telegram_chat_id: str
     telegram_log_id: str
+    exchange: str
+    binance_market_type: str
     binance_base_url: str
+    binance_futures_base_url: str
+    binance_api_key: str
+    binance_api_secret: str
+    binance_futures_leverage: int
+    binance_auto_symbols: bool
+    binance_symbol_limit: int
+    symbol_refresh_seconds: int
+    binance_excluded_symbols: list[str]
     roostoo_base_url: str
     roostoo_api_key: str
     roostoo_api_secret: str
@@ -92,6 +102,8 @@ class Settings:
 
 def load_settings() -> Settings:
     root = Path(__file__).resolve().parents[1]
+    exchange = os.getenv("EXCHANGE", "roostoo").strip().lower()
+    default_market_type = "usdtm" if exchange == "binance_futures" else "spot"
     default_symbols = [
         "SOMIUSDT",
         "PEPEUSDT",
@@ -191,7 +203,24 @@ def load_settings() -> Settings:
         telegram_token=os.getenv("TELEGRAM_TOKEN", "").strip(),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
         telegram_log_id=os.getenv("TELEGRAM_LOG_ID", "").strip(),
+        exchange=exchange,
+        binance_market_type=os.getenv("BINANCE_MARKET_TYPE", default_market_type).strip().lower(),
         binance_base_url=os.getenv("BINANCE_BASE_URL", "https://api.binance.com").rstrip("/"),
+        binance_futures_base_url=os.getenv("BINANCE_FUTURES_BASE_URL", "https://fapi.binance.com").rstrip("/"),
+        binance_api_key=os.getenv("BINANCE_API_KEY", "").strip(),
+        binance_api_secret=os.getenv("BINANCE_API_SECRET", "").strip(),
+        binance_futures_leverage=int(os.getenv("BINANCE_FUTURES_LEVERAGE", "1")),
+        binance_auto_symbols=os.getenv("BINANCE_AUTO_SYMBOLS", "false").lower() == "true"
+        or os.getenv("SYMBOLS", "").strip().lower() == "auto",
+        binance_symbol_limit=int(os.getenv("BINANCE_SYMBOL_LIMIT", "0")),
+        symbol_refresh_seconds=int(os.getenv("SYMBOL_REFRESH_SECONDS", "3600")),
+        binance_excluded_symbols=_split_csv(
+            os.getenv(
+                "BINANCE_EXCLUDED_SYMBOLS",
+                "XAUUSDT,XAGUSDT,PAXGUSDT,XAUTUSDT",
+            ),
+            [],
+        ),
         roostoo_base_url=os.getenv("ROOSTOO_BASE_URL", "").rstrip("/"),
         roostoo_api_key=os.getenv("ROOSTOO_API_KEY", "").strip(),
         roostoo_api_secret=os.getenv("ROOSTOO_API_SECRET", "").strip(),

@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from roostoo_bot.clients.binance import BinanceClient
+from roostoo_bot.clients.binance_futures import BinanceFuturesClient
 from roostoo_bot.clients.roostoo import RoostooClient
 from roostoo_bot.config import Settings
 from roostoo_bot.logging_utils import append_jsonl, get_logger, utc_now_iso
@@ -28,14 +29,44 @@ class TrendBot:
         self.notifier = TelegramNotifier(settings.telegram_token, settings.telegram_chat_id)
         self.state_store = StateStore(settings.state_path)
         self.candle_store = CandleStore(settings.candle_cache_dir)
-        self.binance = BinanceClient(settings.binance_base_url)
-        self.roostoo = RoostooClient(settings)
+        market_type = "usdtm" if settings.exchange == "binance_futures" else settings.binance_market_type
+        market_base_url = (
+            settings.binance_futures_base_url
+            if market_type in {"usdtm", "futures", "binance_futures"}
+            else settings.binance_base_url
+        )
+        self.binance = BinanceClient(market_base_url, market_type=market_type)
+        self._last_symbol_refresh = 0.0
+        self._refresh_auto_symbols(force=True)
+        self.roostoo = BinanceFuturesClient(settings) if settings.exchange == "binance_futures" else RoostooClient(settings)
         self.strategy = TrendOnlyStrategy(settings)
         self.state = self.state_store.load()
         self.telegram_offset = self._load_telegram_offset()
         if self.state.last_cash == 0.0 and not self.state.positions:
             self.state.last_cash = settings.initial_equity
             self.state.last_equity = settings.initial_equity
+
+    def _refresh_auto_symbols(self, *, force: bool = False) -> None:
+        if not self.settings.binance_auto_symbols:
+            return
+        now = time.time()
+        if not force and now - self._last_symbol_refresh < self.settings.symbol_refresh_seconds:
+            return
+        symbols = self.binance.fetch_usdt_m_symbols(
+            limit=self.settings.binance_symbol_limit,
+            excluded_symbols=self.settings.binance_excluded_symbols,
+        )
+        if not symbols:
+            self.logger.warning("Auto symbol refresh returned no Binance USDT-M symbols.")
+            return
+        previous = set(self.settings.symbols)
+        object.__setattr__(self.settings, "symbols", symbols)
+        self._last_symbol_refresh = now
+        added = sorted(set(symbols) - previous)
+        if added:
+            self.logger.info("Loaded %s Binance USDT-M symbols; new symbols: %s", len(symbols), ", ".join(added[:10]))
+        else:
+            self.logger.info("Loaded %s Binance USDT-M symbols.", len(symbols))
 
     @staticmethod
     def _format_price(value: float | None) -> str:
@@ -254,7 +285,7 @@ class TrendBot:
     def _extract_wallet_from_balances(balances: dict[str, object] | None) -> dict[str, dict[str, object]]:
         if not isinstance(balances, dict):
             return {}
-        wallet = balances.get("SpotWallet") or balances.get("Wallet") or {}
+        wallet = balances.get("FuturesWallet") or balances.get("SpotWallet") or balances.get("Wallet") or {}
         return wallet if isinstance(wallet, dict) else {}
 
     def _latest_close_for_symbol(self, symbol: str) -> float | None:
@@ -276,7 +307,7 @@ class TrendBot:
     def _build_wallet_marks(self, wallet: dict[str, dict[str, object]]) -> dict[str, float]:
         marks: dict[str, float] = {}
         for asset, payload in wallet.items():
-            if asset == "USD" or not isinstance(payload, dict):
+            if asset in {"USD", "USDT"} or not isinstance(payload, dict):
                 continue
             total_units = float(payload.get("Free", 0.0) or 0.0) + float(payload.get("Lock", 0.0) or 0.0)
             if total_units <= 0:
@@ -293,11 +324,12 @@ class TrendBot:
         marks: dict[str, float],
         fallback_cash: float,
     ) -> tuple[float, float]:
-        usd_wallet = wallet.get("USD", {}) if isinstance(wallet.get("USD"), dict) else {}
+        stable_asset = "USDT" if isinstance(wallet.get("USDT"), dict) else "USD"
+        usd_wallet = wallet.get(stable_asset, {}) if isinstance(wallet.get(stable_asset), dict) else {}
         cash = float(usd_wallet.get("Free", fallback_cash) or fallback_cash)
         equity = cash + float(usd_wallet.get("Lock", 0.0) or 0.0)
         for asset, payload in wallet.items():
-            if asset == "USD" or not isinstance(payload, dict):
+            if asset in {"USD", "USDT"} or not isinstance(payload, dict):
                 continue
             total_units = float(payload.get("Free", 0.0) or 0.0) + float(payload.get("Lock", 0.0) or 0.0)
             if total_units <= 0:
@@ -381,6 +413,63 @@ class TrendBot:
         candle_map: dict[str, pd.DataFrame],
         signal_ts: pd.Timestamp,
     ) -> None:
+        if isinstance(account.raw, dict) and account.raw.get("exchange") == "binance_futures":
+            ledger = self._rebuild_position_ledger()
+            reconciled: dict[str, PositionState] = {}
+            raw_positions = account.raw.get("positions", [])
+            if not isinstance(raw_positions, list):
+                return
+            for payload in raw_positions:
+                if not isinstance(payload, dict):
+                    continue
+                symbol = str(payload.get("symbol", "")).upper().strip()
+                if not symbol:
+                    continue
+                units = float(payload.get("positionAmt", 0.0) or 0.0)
+                if units <= 0:
+                    continue
+                frame = candle_map.get(symbol)
+                close_price = None
+                if frame is not None and signal_ts in frame.index:
+                    close_price = float(frame.at[signal_ts, "close"])
+                elif frame is not None and not frame.empty:
+                    close_price = float(frame["close"].iloc[-1])
+                avg_entry = float(payload.get("entryPrice", 0.0) or 0.0)
+                if avg_entry <= 0:
+                    avg_entry = close_price or 0.0
+                ledger_row = ledger.get(symbol, {})
+                existing = self.state.positions.get(symbol)
+                stop_price = float(ledger_row.get("stop_price", existing.stop_price if existing is not None else 0.0))
+                target_notional = float(
+                    ledger_row.get(
+                        "target_notional",
+                        existing.target_notional if existing is not None else units * (avg_entry or close_price or 0.0),
+                    )
+                )
+                tranches_filled = int(
+                    round(float(ledger_row.get("tranches_filled", existing.tranches_filled if existing is not None else 1.0)))
+                )
+                peak_close = max(close_price or avg_entry, existing.peak_close if existing is not None else avg_entry)
+                hold_bars = existing.hold_bars if existing is not None else 0
+                bars_since_last_fill = existing.bars_since_last_fill if existing is not None else 0
+                tp_base_units = float(ledger_row.get("tp_base_units", existing.tp_base_units if existing is not None else units))
+                reconciled[symbol] = PositionState(
+                    symbol=symbol,
+                    units=units,
+                    target_notional=target_notional,
+                    tranches_filled=max(tranches_filled, 1),
+                    stop_price=stop_price,
+                    peak_close=peak_close,
+                    hold_bars=hold_bars,
+                    avg_entry=avg_entry,
+                    bars_since_last_fill=bars_since_last_fill,
+                    tp_base_units=max(tp_base_units, units),
+                    tp1_taken=bool(ledger_row.get("tp1_taken", existing.tp1_taken if existing is not None else False)),
+                    tp2_taken=bool(ledger_row.get("tp2_taken", existing.tp2_taken if existing is not None else False)),
+                )
+            self.state.positions = reconciled
+            return
+
         wallet = {}
         if isinstance(account.raw, dict):
             balances = account.raw.get("balances", {})
@@ -392,7 +481,7 @@ class TrendBot:
         ledger = self._rebuild_position_ledger()
         reconciled: dict[str, PositionState] = {}
         for asset, payload in wallet.items():
-            if asset == "USD" or not isinstance(payload, dict):
+            if asset in {"USD", "USDT"} or not isinstance(payload, dict):
                 continue
             units = float(payload.get("Free", 0.0) or 0.0) + float(payload.get("Lock", 0.0) or 0.0)
             if units <= 0:
@@ -485,6 +574,10 @@ class TrendBot:
                 "order_type": instruction.order_type,
                 "order_status": order_status,
                 "error_message": response.get("ErrMsg") or response.get("error") or response.get("Message"),
+                "exchange": self.settings.exchange,
+                "exchange_order_id": response.get("order_id")
+                or response.get("OrderID")
+                or (response.get("OrderDetail", {}) if isinstance(response.get("OrderDetail"), dict) else {}).get("OrderID"),
                 "roostoo_order_id": response.get("order_id")
                 or response.get("OrderID")
                 or (response.get("OrderDetail", {}) if isinstance(response.get("OrderDetail"), dict) else {}).get("OrderID"),
@@ -499,7 +592,7 @@ class TrendBot:
         fill_price: float,
         position_before: PositionState | None = None,
     ) -> None:
-        order_id = response.get("order_id") or response.get("OrderID")
+        order_id = response.get("order_id") or response.get("OrderID") or response.get("orderId")
         order_detail = response.get("OrderDetail")
         if not order_id and isinstance(order_detail, dict):
             order_id = order_detail.get("OrderID")
@@ -565,7 +658,7 @@ class TrendBot:
         for order in open_orders:
             if not isinstance(order, dict):
                 continue
-            order_id = order.get("OrderID") or order.get("order_id")
+            order_id = order.get("OrderID") or order.get("order_id") or order.get("orderId")
             if order_id is not None:
                 ids.add(str(order_id))
         return ids
@@ -580,7 +673,7 @@ class TrendBot:
     ) -> None:
         if order_status not in {"submitted", "pending", "open", "new"}:
             return
-        order_id = response.get("order_id") or response.get("OrderID")
+        order_id = response.get("order_id") or response.get("OrderID") or response.get("orderId")
         order_detail = response.get("OrderDetail")
         if not order_id and isinstance(order_detail, dict):
             order_id = order_detail.get("OrderID")
@@ -752,17 +845,18 @@ class TrendBot:
         try:
             if self.settings.live_trading and self.roostoo.is_configured():
                 snapshot = self.roostoo.fetch_account_snapshot(self.settings.initial_equity)
-                balances = snapshot.raw.get("balances", {}) if isinstance(snapshot.raw, dict) else {}
-                wallet = self._extract_wallet_from_balances(balances)
-                marks = self._build_wallet_marks(wallet)
-                cash, equity = self._mark_wallet_equity(wallet, marks, snapshot.cash)
-                snapshot = AccountSnapshot(
-                    timestamp=snapshot.timestamp,
-                    cash=cash,
-                    equity=equity,
-                    open_orders=snapshot.open_orders,
-                    raw=snapshot.raw,
-                )
+                if not (isinstance(snapshot.raw, dict) and snapshot.raw.get("exchange") == "binance_futures"):
+                    balances = snapshot.raw.get("balances", {}) if isinstance(snapshot.raw, dict) else {}
+                    wallet = self._extract_wallet_from_balances(balances)
+                    marks = self._build_wallet_marks(wallet)
+                    cash, equity = self._mark_wallet_equity(wallet, marks, snapshot.cash)
+                    snapshot = AccountSnapshot(
+                        timestamp=snapshot.timestamp,
+                        cash=cash,
+                        equity=equity,
+                        open_orders=snapshot.open_orders,
+                        raw=snapshot.raw,
+                    )
             else:
                 snapshot = AccountSnapshot(
                     timestamp=utc_now_iso(),
@@ -784,7 +878,7 @@ class TrendBot:
 
     def _format_wallet(self) -> str:
         if not self.roostoo.is_configured():
-            return "Roostoo is not configured."
+            return "Execution client is not configured."
         try:
             balances = self.roostoo.get_balances()
         except Exception as exc:  # noqa: BLE001
@@ -793,15 +887,22 @@ class TrendBot:
         if not wallet:
             return f"Wallet response: {balances}"
         marks = self._build_wallet_marks(wallet)
-        lines = ["Roostoo wallet:"]
+        label = "Binance futures wallet:" if self.settings.exchange == "binance_futures" else "Roostoo wallet:"
+        lines = [label]
         for asset, payload in sorted(wallet.items()):
             if not isinstance(payload, dict):
                 continue
             free = float(payload.get("Free", 0.0) or 0.0)
             locked = float(payload.get("Lock", 0.0) or 0.0)
             total_units = free + locked
-            if asset == "USD":
-                lines.append(f"- {asset}: free={free:,.2f}, lock={locked:,.2f} | usd_value={total_units:,.2f}")
+            if asset in {"USD", "USDT"}:
+                balance = float(payload.get("Balance", total_units) or total_units)
+                if self.settings.exchange != "binance_futures":
+                    lines.append(f"- {asset}: free={free:,.2f}, lock={locked:,.2f} | usd_value={total_units:,.2f}")
+                    continue
+                lines.append(
+                    f"- {asset}: available={free:,.2f}, locked={locked:,.2f}, balance={balance:,.2f}"
+                )
                 continue
             mark = marks.get(asset)
             if mark is None:
@@ -848,13 +949,21 @@ class TrendBot:
     def _format_config(self) -> str:
         return (
             "Bot config\n"
+            f"- exchange: {self.settings.exchange}\n"
+            f"- market_type: {self.settings.binance_market_type}\n"
+            f"- symbols: {len(self.settings.symbols)}\n"
+            f"- auto_symbols: {self.settings.binance_auto_symbols}\n"
             f"- interval: {self.settings.candle_interval}\n"
+            f"- max_open_positions: {self.settings.max_open_positions}\n"
+            f"- risk_per_trade: {self.settings.risk_per_trade:.3f}\n"
+            f"- max_position_notional_pct: {self.settings.max_position_notional_pct:.2f}\n"
             f"- breakout_lookback: {self.settings.breakout_lookback}\n"
             f"- exit_lookback: {self.settings.exit_lookback}\n"
             f"- max_hold_bars: {self.settings.max_hold_bars}\n"
             f"- trailing_stop_pct: {self.settings.trailing_stop_pct:.2f}\n"
             f"- trend_ema_exit_buffer_pct: {self.settings.trend_ema_exit_buffer_pct:.3f}\n"
             f"- tranche_scheme: {self.settings.tranche_scheme}\n"
+            f"- futures_leverage: {self.settings.binance_futures_leverage}x\n"
             f"- use_btc_filter: {self.settings.use_btc_filter}\n"
             f"- live_trading: {self.settings.live_trading}"
         )
@@ -933,7 +1042,7 @@ class TrendBot:
             "/help - show commands\n"
             "/ping - basic liveness/status\n"
             "/account - current account snapshot\n"
-            "/wallet - Roostoo wallet balances\n"
+            "/wallet - exchange wallet balances\n"
             "/orders - recent bot orders\n"
             "/positions - local bot positions\n"
             "/state - local bot state summary\n"
@@ -998,6 +1107,7 @@ class TrendBot:
         self._save_telegram_offset()
 
     def run_cycle(self) -> bool:
+        self._refresh_auto_symbols()
         candle_map = self.refresh_candles()
         signal_ts = self._latest_common_timestamp(candle_map)
         if signal_ts is None:
