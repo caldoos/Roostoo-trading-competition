@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from pprint import pprint
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from roostoo_bot.clients.binance import BinanceClient
 from roostoo_bot.clients.binance_futures import BinanceFuturesClient
