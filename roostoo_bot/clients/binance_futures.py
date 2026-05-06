@@ -274,7 +274,14 @@ class BinanceFuturesClient:
                 return {"Success": False, "ErrMsg": "Limit orders require a price."}
             payload["price"] = normalized["price"]
             payload["timeInForce"] = "GTC"
-        result = self._request("POST", "/fapi/v1/order", params=payload, signed=True)
+        try:
+            result = self._request("POST", "/fapi/v1/order", params=payload, signed=True)
+        except requests.HTTPError as exc:
+            response = exc.response
+            message = str(exc)
+            if response is not None and response.text:
+                message = response.text
+            return {"Success": False, "ErrMsg": message, "status": "failed"}
         if not isinstance(result, dict):
             return {"raw": result}
         return {

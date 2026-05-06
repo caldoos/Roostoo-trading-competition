@@ -204,7 +204,7 @@ class TrendBot:
                 side=instruction.side,
                 quantity=instruction.quantity,
                 order_type=instruction.order_type,
-                price=instruction.limit_price,
+                price=instruction.limit_price or instruction.reference_close,
             )
             if isinstance(response.get("filled_price"), (int, float)):
                 fill_price = float(response["filled_price"])
